@@ -1,3 +1,5 @@
+#ifndef DICT_H
+#define DICT_H
 
 #include <stddef.h>
 
@@ -10,5 +12,10 @@ typedef struct dictEntry {
 typedef struct dictht {
     dictEntry **table;
     size_t size;
+    size_t sizemask;
     size_t used;
 } dictht;
+
+dictht *dictCreate(void);
+
+#endif

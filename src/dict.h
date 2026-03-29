@@ -17,5 +17,6 @@ typedef struct dictht {
 } dictht;
 
 dictht *dictCreate(void);
+int dictSet(dictht *d, const char *key, const char *value);
 
 #endif

@@ -1,4 +1,3 @@
-
 #include "util.h"
 
 ssize_t write_all(int fd, const char *buf, size_t len)

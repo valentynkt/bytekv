@@ -1,4 +1,3 @@
-
 #ifndef EVENT_LOOP_H
 #define EVENT_LOOP_H
 #define MAX_FDS 1024

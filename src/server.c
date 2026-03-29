@@ -1,5 +1,5 @@
-
 #include "server.h"
+#include "command.h"
 #include "event_loop.h"
 #include "util.h"
 #include <arpa/inet.h>
@@ -11,24 +11,8 @@
 #include <string.h>
 
 #define MAX_CLIENTS_FD 1024
-#define MSG_MAX 4096
 #define FRAME_HDR_SIZE 4
 #define WBUF_SIZE ((MSG_MAX + FRAME_HDR_SIZE) * 2)
-
-/*
- * Phase 5+6: Length-Prefixed Framing with Write Buffers
- *
- * Wire format: [4 bytes: payload length, big-endian uint32][payload]
- *
- * Read side:  accumulate bytes in per-client read buffer, extract
- *             complete frames, compact with memmove.
- *
- * Write side: queue framed responses in per-client write buffer.
- *             Register EVFILT_WRITE only when data is queued.
- *             Drain on writable events, unregister when empty.
- *             If write buffer full, stop extracting frames (backpressure).
- *             Resume when write buffer drains.
- */
 
 typedef struct {
     bool active;
@@ -43,7 +27,6 @@ typedef struct {
     client_t clients[MAX_CLIENTS_FD];
 } server_state_t;
 
-/* Forward declarations — needed for cross-references between callbacks */
 static void on_write(event_loop_t *el, int fd);
 static void on_read(event_loop_t *el, int fd);
 static void process_buffer(event_loop_t *el, int fd);
@@ -57,16 +40,11 @@ static void remove_client(event_loop_t *el, int fd)
     state->clients[fd] = (client_t){0};
 }
 
-/*
- * Append data to the client's write buffer. Register EVFILT_WRITE
- * so on_write drains it. Returns false if the buffer is full.
- */
 static bool queue_write(event_loop_t *el, int fd, const char *data, size_t len)
 {
     server_state_t *state = el->ctx;
     client_t *c = &state->clients[fd];
 
-    /* Compact: shift unsent data to front if we need room */
     if (c->wlen + len > WBUF_SIZE && c->woff > 0) {
         size_t pending = c->wlen - c->woff;
         memmove(c->wbuf, c->wbuf + c->woff, pending);
@@ -80,15 +58,10 @@ static bool queue_write(event_loop_t *el, int fd, const char *data, size_t len)
     memcpy(c->wbuf + c->wlen, data, len);
     c->wlen += len;
 
-    /* EV_ADD is idempotent — safe to call even if already registered */
     el_add_write(el, fd, on_write);
     return true;
 }
 
-/*
- * Build a framed response and queue it for writing.
- * Returns false if write buffer is full (backpressure signal).
- */
 static bool send_framed(event_loop_t *el, int fd, const char *payload, uint32_t payload_len)
 {
     char frame[FRAME_HDR_SIZE + MSG_MAX];
@@ -98,11 +71,6 @@ static bool send_framed(event_loop_t *el, int fd, const char *payload, uint32_t 
     return queue_write(el, fd, frame, FRAME_HDR_SIZE + payload_len);
 }
 
-/*
- * Extract complete frames from the read buffer and queue responses.
- * Stops if: not enough data, bad client, or write buffer full.
- * Called from on_read (new data) and on_write (write buffer drained).
- */
 static void process_buffer(event_loop_t *el, int fd)
 {
     server_state_t *state = el->ctx;
@@ -118,10 +86,13 @@ static void process_buffer(event_loop_t *el, int fd)
             return;
         }
         if (c->len < FRAME_HDR_SIZE + payload_len)
-            return; /* incomplete frame — wait for more data */
+            return;
 
-        if (!send_framed(el, fd, c->buf + FRAME_HDR_SIZE, payload_len))
-            return; /* write buffer full — stop, resume when drained */
+        char resp[MSG_MAX];
+        char *payload = c->buf + FRAME_HDR_SIZE;
+        size_t rlen = command_execute(payload, payload_len, resp, sizeof(resp));
+        if (!send_framed(el, fd, resp, (uint32_t)rlen))
+            return;
 
         size_t frame_size = FRAME_HDR_SIZE + payload_len;
         memmove(c->buf, c->buf + frame_size, c->len - frame_size);
@@ -129,12 +100,6 @@ static void process_buffer(event_loop_t *el, int fd)
     }
 }
 
-/*
- * Called by kqueue when a client fd is writable.
- * Drain as much of the write buffer as the kernel will accept.
- * When fully drained, unregister EVFILT_WRITE and try to process
- * more frames (may have stopped due to backpressure).
- */
 static void on_write(event_loop_t *el, int fd)
 {
     server_state_t *state = el->ctx;
@@ -152,12 +117,10 @@ static void on_write(event_loop_t *el, int fd)
     c->woff += n;
 
     if (c->woff == c->wlen) {
-        /* Fully drained — stop watching for writability */
         c->woff = 0;
         c->wlen = 0;
         el_remove_write(el, fd);
 
-        /* Resume: process_buffer may have stopped due to full write buf */
         process_buffer(el, fd);
     }
 }
@@ -230,10 +193,6 @@ int run_networking(void)
 
     printf("[framing] listening on port %d\n", PORT);
 
-    /*
-     * static: server_state_t is ~12MB (1024 clients × 12KB each).
-     * Too large for the stack. static puts it in BSS.
-     */
     static server_state_t state;
     memset(&state, 0, sizeof(state));
     event_loop_t el;

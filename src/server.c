@@ -56,9 +56,33 @@ static bool queue_write(event_loop_t *el, int fd, const char *data, size_t len)
     if (c->wlen + len > WBUF_SIZE)
         return false;
 
+    bool buf_was_empty = (c->wlen == 0);
+
     memcpy(c->wbuf + c->wlen, data, len);
     c->wlen += len;
 
+    /* Fast path: try direct write if no prior data was pending */
+    if (buf_was_empty) {
+        ssize_t n = write(fd, c->wbuf + c->woff, c->wlen - c->woff);
+        if (n == -1) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                perror("write");
+                remove_client(el, fd);
+                return false;
+            }
+            /* EAGAIN/EINTR: write nothing, fall through to register handler */
+        } else {
+            c->woff += n;
+            if (c->woff == c->wlen) {
+                /* Everything sent — skip kqueue entirely */
+                c->woff = 0;
+                c->wlen = 0;
+                return true;
+            }
+        }
+    }
+
+    /* Slow path: data remains unsent, let the event loop drain it */
     el_add_write(el, fd, on_write);
     return true;
 }

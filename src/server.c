@@ -11,6 +11,7 @@
 #include <string.h>
 
 #define MAX_CLIENTS_FD 1024
+#define MSG_MAX 4096
 #define FRAME_HDR_SIZE 4
 #define WBUF_SIZE ((MSG_MAX + FRAME_HDR_SIZE) * 2)
 

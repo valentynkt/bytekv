@@ -5,7 +5,7 @@
 #include <strings.h>
 
 #define DICT_INITIAL_SIZE 4
-
+#define LOAD_FACTOR 0.75
 dictht *dictCreate(void)
 {
     dictht *dict = malloc(sizeof(*dict));
@@ -39,17 +39,95 @@ int dictSet(dictht *d, const char *key, const char *value)
             /* UPDATE: key exists, replace value */
             free(entry->val);
             entry->val = strdup(value);
-            return 0;
+            return EXIT_SUCCESS;
         }
         entry = entry->next;
     }
 
     /* INSERT: key not found, prepend to chain head */
     dictEntry *new_entry = malloc(sizeof(*new_entry));
+    if (new_entry == NULL) {
+        return EXIT_FAILURE;
+    }
     new_entry->key = strdup(key);
     new_entry->val = strdup(value);
     new_entry->next = d->table[index];
     d->table[index] = new_entry;
     d->used++;
-    return 0;
+    if ((double)d->used / d->size > LOAD_FACTOR)
+        dictResize(d, d->size * 2);
+    return EXIT_SUCCESS;
+}
+
+char *dictGet(dictht *d, const char *key)
+{
+    size_t index = dictGenHashFn(key) & d->sizemask;
+    dictEntry *entry = d->table[index];
+    while (entry != NULL) {
+        if (strcasecmp(entry->key, key) == 0)
+            return entry->val;
+        entry = entry->next;
+    }
+    return NULL;
+}
+
+int dictDel(dictht *d, const char *key)
+{
+    size_t index = dictGenHashFn(key) & d->sizemask;
+    dictEntry *prevEntry = NULL;
+    dictEntry *entry = d->table[index];
+    while (entry != NULL) {
+        if (strcasecmp(entry->key, key) == 0) {
+            if (prevEntry == NULL)
+                d->table[index] = entry->next;
+            else
+                prevEntry->next = entry->next;
+            free(entry->key);
+            free(entry->val);
+            free(entry);
+            d->used--;
+            return EXIT_SUCCESS;
+        }
+        prevEntry = entry;
+        entry = entry->next;
+    }
+    return EXIT_FAILURE;
+}
+int dictFree(dictht *d)
+{
+    for (size_t i = 0; i < d->size; i++) {
+        dictEntry *entry = d->table[i];
+        while (entry != NULL) {
+            free(entry->key);
+            free(entry->val);
+            dictEntry *next = entry->next;
+            free(entry);
+            entry = next;
+        }
+    }
+    free(d->table);
+    free(d);
+    return EXIT_SUCCESS;
+}
+
+int dictResize(dictht *d, size_t new_size)
+{
+
+    dictEntry **new_table = calloc(new_size, sizeof(dictEntry *));
+    for (size_t i = 0; i < d->size; i++) {
+        dictEntry *entry = d->table[i];
+        while (entry != NULL) {
+
+            size_t new_idx = dictGenHashFn(entry->key) & (new_size - 1);
+            dictEntry *nextEntry = entry->next;
+            entry->next = new_table[new_idx];
+            new_table[new_idx] = entry;
+            entry = nextEntry;
+        }
+    }
+    free(d->table);
+    d->table = new_table;
+    d->size = new_size;
+    d->sizemask = new_size - 1;
+    return EXIT_SUCCESS;
 }

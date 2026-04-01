@@ -1,6 +1,5 @@
 #ifndef DICT_H
 #define DICT_H
-
 #include <stddef.h>
 
 typedef struct dictEntry {
@@ -18,5 +17,8 @@ typedef struct dictht {
 
 dictht *dictCreate(void);
 int dictSet(dictht *d, const char *key, const char *value);
-
+char *dictGet(dictht *d, const char *key);
+int dictDel(dictht *d, const char *key);
+int dictFree(dictht *d);
+int dictResize(dictht *d, size_t new_size);
 #endif

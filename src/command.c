@@ -1,11 +1,14 @@
 #include "command.h"
+#include "dict.h"
 #include "util.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-
 #define MAX_TOKENS 8
+#define LOAD_FACTOR 0.75
 
+static dictht *db = NULL;
 static size_t write_resp(char *out, size_t out_cap, const char *resp)
 {
     size_t len = strlen(resp);
@@ -17,19 +20,34 @@ static size_t write_resp(char *out, size_t out_cap, const char *resp)
 
 static size_t cmd_get(command_ctx_t *ctx)
 {
-    printf("GET key=%s\n", ctx->argv[1]);
-    return write_resp(ctx->out, ctx->out_cap, "-ERR not implemented\n");
+    char *val = dictGet(db, ctx->argv[1]);
+    if (val == NULL)
+        return write_resp(ctx->out, ctx->out_cap, "-ERR key not found\n");
+
+    return (size_t)snprintf(ctx->out, ctx->out_cap, "+%s\n", val);
 }
 
 static size_t cmd_set(command_ctx_t *ctx)
 {
-    printf("SET key=%s value=%s\n", ctx->argv[1], ctx->argv[2]);
+    int res = dictSet(db, ctx->argv[1], ctx->argv[2]);
+    if (res == EXIT_FAILURE)
+        return write_resp(ctx->out, ctx->out_cap, "-ERR SET COMMAND\n");
+    return write_resp(ctx->out, ctx->out_cap, "+OK\n");
+}
+
+static size_t cmd_del(command_ctx_t *ctx)
+{
+    int res = dictDel(db, ctx->argv[1]);
+    if (res == EXIT_FAILURE) {
+        return write_resp(ctx->out, ctx->out_cap, "-ERR DEL COMMAND\n");
+    }
     return write_resp(ctx->out, ctx->out_cap, "+OK\n");
 }
 
 static struct kvCommand kvCommandTable[] = {
     {"GET", cmd_get, 2},
     {"SET", cmd_set, -3},
+    {"DEL", cmd_del, 2},
     {NULL, NULL, 0},
 };
 
@@ -61,6 +79,9 @@ static int tokenize_command(char *cmd, char **argv, int max_tokens)
 // dispatch
 size_t command_execute(const char *payload, size_t len, char *out, size_t out_cap)
 {
+    if (db == NULL) {
+        db = dictCreate();
+    }
     char cmd[MSG_MAX + 1];
     memcpy(cmd, payload, len);
     cmd[len] = '\0';

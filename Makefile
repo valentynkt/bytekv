@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -std=c17 -g -fsanitize=address,undefined -MMD -MP
-LDFLAGS = -fsanitize=address,undefined -g
+CFLAGS = -Wall -Wextra -Werror -std=c17 -g -fsanitize=undefined -MMD -MP
+LDFLAGS = -fsanitize=undefined -g
 
 TARGET = bytekv
 SRC_DIR = src

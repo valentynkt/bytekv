@@ -13,6 +13,7 @@ static size_t write_resp(char *out, size_t out_cap, const char *resp)
 {
     size_t len = strlen(resp);
     if (len > out_cap)
+        // remaining place
         len = out_cap;
     memcpy(out, resp, len);
     return len;
@@ -34,6 +35,22 @@ static size_t cmd_set(command_ctx_t *ctx)
         return write_resp(ctx->out, ctx->out_cap, "-ERR SET COMMAND\n");
     return write_resp(ctx->out, ctx->out_cap, "+OK\n");
 }
+static size_t cmd_keys(command_ctx_t *ctx)
+{
+    dictIterator *iter = dictGetIterator(db);
+    dictEntry *db_elem;
+    size_t len = 0;
+    int count = 0;
+    while ((db_elem = dictIteratorNext(iter)) != NULL) {
+        int n = snprintf(ctx->out + len, ctx->out_cap - len, "%d) %s\n", count + 1, db_elem->key);
+        if (n > 0) {
+            len += (size_t)n;
+        }
+        count++;
+    }
+    free(iter);
+    return len;
+}
 
 static size_t cmd_del(command_ctx_t *ctx)
 {
@@ -45,10 +62,8 @@ static size_t cmd_del(command_ctx_t *ctx)
 }
 
 static struct kvCommand kvCommandTable[] = {
-    {"GET", cmd_get, 2},
-    {"SET", cmd_set, -3},
-    {"DEL", cmd_del, 2},
-    {NULL, NULL, 0},
+    {"GET", cmd_get, 2},   {"SET", cmd_set, -3}, {"DEL", cmd_del, 2},
+    {"KEYS", cmd_keys, 1}, {NULL, NULL, 0},
 };
 
 static struct kvCommand *lookupCommand(const char *name)

@@ -14,6 +14,12 @@ typedef struct dictht {
     size_t sizemask;
     size_t used;
 } dictht;
+typedef struct dictIterator {
+    dictht *db;
+    int index;
+    dictEntry *entry;
+    dictEntry *nextEntry;
+} dictIterator;
 
 dictht *dictCreate(void);
 int dictSet(dictht *d, const char *key, const char *value);
@@ -21,4 +27,8 @@ char *dictGet(dictht *d, const char *key);
 int dictDel(dictht *d, const char *key);
 int dictFree(dictht *d);
 int dictResize(dictht *d, size_t new_size);
+
+dictIterator *dictGetIterator(dictht *db);
+dictEntry *dictIteratorNext(dictIterator *iterator);
+
 #endif

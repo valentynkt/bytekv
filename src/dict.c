@@ -1,5 +1,7 @@
 #include "dict.h"
 #include <ctype.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -130,4 +132,34 @@ int dictResize(dictht *d, size_t new_size)
     d->size = new_size;
     d->sizemask = new_size - 1;
     return EXIT_SUCCESS;
+}
+
+dictIterator *dictGetIterator(dictht *db)
+{
+    dictIterator *iter = malloc(sizeof(*iter));
+
+    iter->db = db;
+    iter->index = -1;
+    iter->entry = NULL;
+    iter->nextEntry = NULL;
+    return iter;
+}
+
+dictEntry *dictIteratorNext(dictIterator *iter)
+{
+    while (true) {
+        if (iter->entry == NULL) {
+            iter->index++;
+            if ((size_t)iter->index >= iter->db->size) {
+                break;
+            }
+            iter->entry = iter->db->table[iter->index];
+        } else {
+            iter->entry = iter->nextEntry;
+        }
+        if (iter->entry) {
+            return iter->entry;
+        }
+    }
+    return NULL;
 }

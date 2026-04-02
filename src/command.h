@@ -5,10 +5,15 @@
 #include <stdint.h>
 
 typedef struct {
+    char *buf;
+    size_t cap;
+    size_t len;
+} respbuf;
+
+typedef struct {
     int argc;
     char **argv;
-    char *out;
-    size_t out_cap;
+    respbuf resp;
 } command_ctx_t;
 
 typedef size_t kvCommandProc(command_ctx_t *ctx);

@@ -1,69 +1,105 @@
 #include "command.h"
 #include "dict.h"
 #include "util.h"
+#include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
+
 #define MAX_TOKENS 8
-#define LOAD_FACTOR 0.75
 
 static dictht *db = NULL;
-static size_t write_resp(char *out, size_t out_cap, const char *resp)
+static time_t start_time = 0;
+
+/* respbuf helpers */
+
+static void resp_add(respbuf *r, const char *s)
 {
-    size_t len = strlen(resp);
-    if (len > out_cap)
-        // remaining place
-        len = out_cap;
-    memcpy(out, resp, len);
-    return len;
+    size_t slen = strlen(s);
+    size_t avail = r->cap - r->len;
+    if (slen > avail)
+        slen = avail;
+    memcpy(r->buf + r->len, s, slen);
+    r->len += slen;
 }
+
+__attribute__((format(printf, 2, 3)))
+static void resp_addf(respbuf *r, const char *fmt, ...)
+{
+    size_t avail = r->cap - r->len;
+    if (avail == 0)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(r->buf + r->len, avail, fmt, ap);
+    va_end(ap);
+    if (n > 0)
+        r->len += ((size_t)n < avail) ? (size_t)n : avail - 1;
+}
+
+/* command handlers */
 
 static size_t cmd_get(command_ctx_t *ctx)
 {
     char *val = dictGet(db, ctx->argv[1]);
-    if (val == NULL)
-        return write_resp(ctx->out, ctx->out_cap, "-ERR key not found\n");
-
-    return (size_t)snprintf(ctx->out, ctx->out_cap, "+%s\n", val);
+    if (val == NULL) {
+        resp_add(&ctx->resp, "-ERR key not found\n");
+        return ctx->resp.len;
+    }
+    resp_addf(&ctx->resp, "+%s\n", val);
+    return ctx->resp.len;
 }
 
 static size_t cmd_set(command_ctx_t *ctx)
 {
     int res = dictSet(db, ctx->argv[1], ctx->argv[2]);
     if (res == EXIT_FAILURE)
-        return write_resp(ctx->out, ctx->out_cap, "-ERR SET COMMAND\n");
-    return write_resp(ctx->out, ctx->out_cap, "+OK\n");
+        resp_add(&ctx->resp, "-ERR SET COMMAND\n");
+    else
+        resp_add(&ctx->resp, "+OK\n");
+    return ctx->resp.len;
 }
+
 static size_t cmd_keys(command_ctx_t *ctx)
 {
     dictIterator *iter = dictGetIterator(db);
-    dictEntry *db_elem;
-    size_t len = 0;
+    dictEntry *entry;
     int count = 0;
-    while ((db_elem = dictIteratorNext(iter)) != NULL) {
-        int n = snprintf(ctx->out + len, ctx->out_cap - len, "%d) %s\n", count + 1, db_elem->key);
-        if (n > 0) {
-            len += (size_t)n;
-        }
+    while ((entry = dictIteratorNext(iter)) != NULL) {
+        resp_addf(&ctx->resp, "%d) %s\n", count + 1, entry->key);
         count++;
     }
     free(iter);
-    return len;
+    return ctx->resp.len;
 }
 
 static size_t cmd_del(command_ctx_t *ctx)
 {
     int res = dictDel(db, ctx->argv[1]);
-    if (res == EXIT_FAILURE) {
-        return write_resp(ctx->out, ctx->out_cap, "-ERR DEL COMMAND\n");
-    }
-    return write_resp(ctx->out, ctx->out_cap, "+OK\n");
+    if (res == EXIT_FAILURE)
+        resp_add(&ctx->resp, "-ERR DEL COMMAND\n");
+    else
+        resp_add(&ctx->resp, "+OK\n");
+    return ctx->resp.len;
+}
+
+static size_t cmd_info(command_ctx_t *ctx)
+{
+    time_t uptime = time(NULL) - start_time;
+    resp_addf(&ctx->resp,
+              "Uptime: %ld seconds\n"
+              "DB Size: %d\n"
+              "DB Keys Used: %d\n",
+              (long)uptime, (int)db->size, (int)db->used);
+    return ctx->resp.len;
 }
 
 static struct kvCommand kvCommandTable[] = {
-    {"GET", cmd_get, 2},   {"SET", cmd_set, -3}, {"DEL", cmd_del, 2},
-    {"KEYS", cmd_keys, 1}, {NULL, NULL, 0},
+    {"GET", cmd_get, 2},   {"SET", cmd_set, -3},  {"DEL", cmd_del, 2},
+    {"KEYS", cmd_keys, 1}, {"INFO", cmd_info, 1}, {NULL, NULL, 0},
 };
 
 static struct kvCommand *lookupCommand(const char *name)
@@ -74,6 +110,7 @@ static struct kvCommand *lookupCommand(const char *name)
     }
     return NULL;
 }
+
 // tokenizer
 static int tokenize_command(char *cmd, char **argv, int max_tokens)
 {
@@ -96,6 +133,7 @@ size_t command_execute(const char *payload, size_t len, char *out, size_t out_ca
 {
     if (db == NULL) {
         db = dictCreate();
+        start_time = time(NULL);
     }
     char cmd[MSG_MAX + 1];
     memcpy(cmd, payload, len);
@@ -104,17 +142,25 @@ size_t command_execute(const char *payload, size_t len, char *out, size_t out_ca
     char *argv[MAX_TOKENS];
     int argc = tokenize_command(cmd, argv, MAX_TOKENS);
 
-    if (argc == 0)
-        return write_resp(out, out_cap, "-ERR empty command\n");
+    respbuf resp = {out, out_cap, 0};
+
+    if (argc == 0) {
+        resp_add(&resp, "-ERR empty command\n");
+        return resp.len;
+    }
 
     struct kvCommand *command = lookupCommand(argv[0]);
-    if (command == NULL)
-        return write_resp(out, out_cap, "-ERR unknown command\n");
+    if (command == NULL) {
+        resp_add(&resp, "-ERR unknown command\n");
+        return resp.len;
+    }
 
     if ((command->arity > 0 && argc != command->arity) ||
-        (command->arity < 0 && argc < -(command->arity)))
-        return write_resp(out, out_cap, "-ERR wrong number of arguments\n");
+        (command->arity < 0 && argc < -(command->arity))) {
+        resp_add(&resp, "-ERR wrong number of arguments\n");
+        return resp.len;
+    }
 
-    command_ctx_t ctx = {argc, argv, out, out_cap};
+    command_ctx_t ctx = {argc, argv, resp};
     return command->proc(&ctx);
 }

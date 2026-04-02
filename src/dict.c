@@ -24,7 +24,6 @@ static size_t dictGenHashFn(const char *key)
     int c;
 
     while ((c = *key++)) {
-        c = tolower(c);
         hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
     }
     return hash;
@@ -37,7 +36,7 @@ int dictSet(dictht *d, const char *key, const char *value)
     /* Walk chain — check if key already exists */
     dictEntry *entry = d->table[index];
     while (entry != NULL) {
-        if (strcasecmp(entry->key, key) == 0) {
+        if (strcmp(entry->key, key) == 0) {
             /* UPDATE: key exists, replace value */
             free(entry->val);
             entry->val = strdup(value);
@@ -158,6 +157,7 @@ dictEntry *dictIteratorNext(dictIterator *iter)
             iter->entry = iter->nextEntry;
         }
         if (iter->entry) {
+            iter->nextEntry = iter->entry->next;
             return iter->entry;
         }
     }

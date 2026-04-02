@@ -36,8 +36,11 @@ static void resp_addf(respbuf *r, const char *fmt, ...)
     va_start(ap, fmt);
     int n = vsnprintf(r->buf + r->len, avail, fmt, ap);
     va_end(ap);
-    if (n > 0)
-        r->len += ((size_t)n < avail) ? (size_t)n : avail - 1;
+    if (n > 0) {
+        if ((size_t)n >= avail)
+            n = (int)(avail - 1);
+        r->len += (size_t)n;
+    }
 }
 
 /* command handlers */

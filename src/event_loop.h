@@ -9,10 +9,9 @@ struct event_loop {
     int kq;
     el_handler_fn read_handlers[MAX_FDS];
     el_handler_fn write_handlers[MAX_FDS];
-    void *ctx;
 };
 
-int el_init(event_loop_t *el, void *ctx);
+int el_init(event_loop_t *el);
 int el_add(event_loop_t *el, int fd, el_handler_fn handler);
 int el_add_write(event_loop_t *el, int fd, el_handler_fn handler);
 void el_remove(event_loop_t *el, int fd);

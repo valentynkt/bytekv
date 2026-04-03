@@ -3,6 +3,7 @@
 #include "event_loop.h"
 #include "util.h"
 #include <arpa/inet.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -10,23 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_CLIENTS_FD 1024
-#define MSG_MAX 4096
-#define FRAME_HDR_SIZE 4
-#define WBUF_SIZE ((MSG_MAX + FRAME_HDR_SIZE) * 2)
-
-typedef struct {
-    bool active;
-    char buf[MSG_MAX + FRAME_HDR_SIZE]; /* read buffer */
-    size_t len;                         /* read buffer: bytes accumulated */
-    char wbuf[WBUF_SIZE];               /* write buffer */
-    size_t wlen;                        /* write buffer: total bytes queued */
-    size_t woff;                        /* write buffer: bytes already sent */
-} client_t;
-
-typedef struct {
-    client_t clients[MAX_CLIENTS_FD];
-} server_state_t;
+server_t server;
 
 static void on_write(event_loop_t *el, int fd);
 static void on_read(event_loop_t *el, int fd);
@@ -34,17 +19,15 @@ static void process_buffer(event_loop_t *el, int fd);
 
 static void remove_client(event_loop_t *el, int fd)
 {
-    server_state_t *state = el->ctx;
     printf("client disconnected (fd=%d)\n", fd);
     el_remove(el, fd);
     close(fd);
-    state->clients[fd] = (client_t){0};
+    server.clients[fd] = (client_t){0};
 }
 
 static bool queue_write(event_loop_t *el, int fd, const char *data, size_t len)
 {
-    server_state_t *state = el->ctx;
-    client_t *c = &state->clients[fd];
+    client_t *c = &server.clients[fd];
 
     if (c->wlen + len > WBUF_SIZE && c->woff > 0) {
         size_t pending = c->wlen - c->woff;
@@ -98,8 +81,7 @@ static bool send_framed(event_loop_t *el, int fd, const char *payload, uint32_t 
 
 static void process_buffer(event_loop_t *el, int fd)
 {
-    server_state_t *state = el->ctx;
-    client_t *c = &state->clients[fd];
+    client_t *c = &server.clients[fd];
 
     while (c->len >= FRAME_HDR_SIZE) {
         uint32_t net_len;
@@ -127,8 +109,7 @@ static void process_buffer(event_loop_t *el, int fd)
 
 static void on_write(event_loop_t *el, int fd)
 {
-    server_state_t *state = el->ctx;
-    client_t *c = &state->clients[fd];
+    client_t *c = &server.clients[fd];
 
     ssize_t n = write(fd, c->wbuf + c->woff, c->wlen - c->woff);
     if (n == -1) {
@@ -152,8 +133,7 @@ static void on_write(event_loop_t *el, int fd)
 
 static void on_read(event_loop_t *el, int fd)
 {
-    server_state_t *state = el->ctx;
-    client_t *c = &state->clients[fd];
+    client_t *c = &server.clients[fd];
 
     if (!c->active)
         return;
@@ -178,8 +158,6 @@ static void on_read(event_loop_t *el, int fd)
 
 static void on_accept(event_loop_t *el, int server_fd)
 {
-    server_state_t *state = el->ctx;
-
     int fd = accept(server_fd, NULL, NULL);
     if (fd == -1) {
         if (errno != EAGAIN && errno != EWOULDBLOCK)
@@ -196,17 +174,47 @@ static void on_accept(event_loop_t *el, int server_fd)
         return;
     }
 
-    state->clients[fd] = (client_t){.active = true};
+    server.clients[fd] = (client_t){.active = true};
     printf("client connected (fd=%d)\n", fd);
 
     if (el_add(el, fd, on_read) == -1) {
         close(fd);
-        state->clients[fd] = (client_t){0};
+        server.clients[fd] = (client_t){0};
     }
 }
-
-int run_networking(void)
+// ToDo: could be refined to track the 2 SIGINT, which means that user want imediate shutdown
+// without waiting.
+static void sigShutdownHandler(int sig)
 {
+    char *msg;
+    switch (sig) {
+    case SIGINT:
+        msg = "Received SIGINT scheduling shutdown...";
+        break;
+    case SIGTERM:
+        msg = "Received SIGTERM scheduling shutdown...";
+        break;
+    default:
+        msg = "Received shutdown signal, scheduling shutdown...";
+    };
+    // For now we just set the state, so we could handle it in our event loop, and than process it
+    // somehow.
+    printf("SIGNAL: %d\nMessage: %s\n", sig, msg);
+    server.shutdown_asap = 1;
+}
+static void setupSignalHandlers()
+{
+    struct sigaction sig_act;
+    sig_act.sa_flags = 0;
+    sig_act.sa_handler = sigShutdownHandler;
+    sigaction(SIGINT, &sig_act, NULL);
+    sigaction(SIGTERM, &sig_act, NULL);
+}
+
+int init_server(void)
+{
+    setupSignalHandlers();
+
     int server_fd = create_listener();
     if (server_fd == -1)
         return EXIT_FAILURE;
@@ -218,28 +226,34 @@ int run_networking(void)
 
     printf("[framing] listening on port %d\n", PORT);
 
-    static server_state_t state;
-    memset(&state, 0, sizeof(state));
-    event_loop_t el;
+    memset(&server, 0, sizeof(server));
 
-    if (el_init(&el, &state) == -1) {
+    if (el_init(&server.el) == -1) {
         close(server_fd);
         return EXIT_FAILURE;
     }
 
-    if (el_add(&el, server_fd, on_accept) == -1) {
+    if (el_add(&server.el, server_fd, on_accept) == -1) {
         close(server_fd);
-        el_cleanup(&el);
+        el_cleanup(&server.el);
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+
+int run_networking(void)
+{
+    if (init_server() == EXIT_FAILURE) {
         return EXIT_FAILURE;
     }
 
-    el_run(&el);
+    el_run(&server.el);
 
     for (int fd = 0; fd < MAX_CLIENTS_FD; fd++) {
-        if (state.clients[fd].active)
+        if (server.clients[fd].active)
             close(fd);
     }
-    close(server_fd);
-    el_cleanup(&el);
+    close(server.server_fd);
+    el_cleanup(&server.el);
     return EXIT_FAILURE;
 }

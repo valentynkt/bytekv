@@ -9,12 +9,10 @@
 
 #define MAX_EVENTS 64
 
-int el_init(event_loop_t *el, void *ctx)
+int el_init(event_loop_t *el)
 {
     memset(el->read_handlers, 0, sizeof(el->read_handlers));
     memset(el->write_handlers, 0, sizeof(el->write_handlers));
-    el->ctx = ctx;
-
     el->kq = kqueue();
     if (el->kq == -1)
         return -1;

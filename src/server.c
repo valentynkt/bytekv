@@ -197,11 +197,16 @@ static void sigShutdownHandler(int sig)
     default:
         msg = "Received shutdown signal, scheduling shutdown...";
     };
-    // For now we just set the state, so we could handle it in our event loop, and than process it
-    // somehow.
+    if (server.shutdown_asap && sig == SIGINT) {
+        printf("FORCE SHUTDOWN");
+        exit(1);
+    }
+    // For now we just set the state, so we could handle it in our event loop, and than process
+    // it somehow.
     printf("SIGNAL: %d\nMessage: %s\n", sig, msg);
     server.shutdown_asap = 1;
 }
+
 static void setupSignalHandlers()
 {
     struct sigaction sig_act;
@@ -225,8 +230,6 @@ int init_server(void)
     }
 
     printf("[framing] listening on port %d\n", PORT);
-
-    memset(&server, 0, sizeof(server));
 
     if (el_init(&server.el) == -1) {
         close(server_fd);

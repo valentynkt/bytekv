@@ -24,7 +24,7 @@ typedef struct {
     event_loop_t el;
     client_t clients[MAX_CLIENTS_FD];
     size_t clients_count;
-    int shutdown_asap;
+    bool shutdown_asap;
 } server_t;
 
 int run_networking(void);

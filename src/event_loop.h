@@ -1,5 +1,6 @@
 #ifndef EVENT_LOOP_H
 #define EVENT_LOOP_H
+#include <stdbool.h>
 #define MAX_FDS 1024
 
 typedef struct event_loop event_loop_t;
@@ -9,6 +10,7 @@ struct event_loop {
     int kq;
     el_handler_fn read_handlers[MAX_FDS];
     el_handler_fn write_handlers[MAX_FDS];
+    bool stop;
 };
 
 int el_init(event_loop_t *el);

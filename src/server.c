@@ -197,14 +197,14 @@ static void sigShutdownHandler(int sig)
     default:
         msg = "Received shutdown signal, scheduling shutdown...";
     };
-    if (server.shutdown_asap && sig == SIGINT) {
+    if (server.el.stop && sig == SIGINT) {
         printf("FORCE SHUTDOWN");
         exit(1);
     }
     // For now we just set the state, so we could handle it in our event loop, and than process
     // it somehow.
     printf("SIGNAL: %d\nMessage: %s\n", sig, msg);
-    server.shutdown_asap = 1;
+    server.el.stop = 1;
 }
 
 static void setupSignalHandlers()

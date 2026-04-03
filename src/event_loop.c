@@ -81,8 +81,11 @@ int el_run(event_loop_t *el)
     for (;;) {
         int n = kevent(el->kq, NULL, 0, events, MAX_EVENTS, NULL);
         if (n == -1) {
-            if (errno == EINTR)
+            if (errno == EINTR) {
+                if (el->stop)
+                    return 0;
                 continue;
+            }
             perror("kevent");
             return -1;
         }

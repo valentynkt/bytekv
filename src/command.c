@@ -1,5 +1,5 @@
 #include "command.h"
-#include "dict.h"
+#include "db.h"
 #include "util.h"
 #include <stdarg.h>
 #include <stddef.h>
@@ -11,7 +11,7 @@
 
 #define MAX_TOKENS 8
 
-static dictht *db = NULL;
+static db_t *db = NULL;
 static time_t start_time = 0;
 
 /* respbuf helpers */
@@ -47,7 +47,7 @@ static void resp_addf(respbuf *r, const char *fmt, ...)
 
 static size_t cmd_get(command_ctx_t *ctx)
 {
-    char *val = dictGet(db, ctx->argv[1]);
+    char *val = db_get(db, ctx->argv[1]);
     if (val == NULL) {
         resp_add(&ctx->resp, "-ERR key not found\n");
         return ctx->resp.len;
@@ -58,7 +58,7 @@ static size_t cmd_get(command_ctx_t *ctx)
 
 static size_t cmd_set(command_ctx_t *ctx)
 {
-    int res = dictSet(db, ctx->argv[1], ctx->argv[2]);
+    int res = db_set(db, ctx->argv[1], ctx->argv[2]);
     if (res == EXIT_FAILURE)
         resp_add(&ctx->resp, "-ERR SET COMMAND\n");
     else
@@ -68,10 +68,10 @@ static size_t cmd_set(command_ctx_t *ctx)
 
 static size_t cmd_keys(command_ctx_t *ctx)
 {
-    dictIterator *iter = dictGetIterator(db);
-    dictEntry *entry;
+    ht_iter_t *iter = ht_iter_create(db->keyspace);
+    ht_entry_t *entry;
     int count = 0;
-    while ((entry = dictIteratorNext(iter)) != NULL) {
+    while ((entry = ht_iter_next(iter)) != NULL) {
         resp_addf(&ctx->resp, "%d) %s\n", count + 1, entry->key);
         count++;
     }
@@ -81,7 +81,7 @@ static size_t cmd_keys(command_ctx_t *ctx)
 
 static size_t cmd_del(command_ctx_t *ctx)
 {
-    int res = dictDel(db, ctx->argv[1]);
+    int res = db_del(db, ctx->argv[1]);
     if (res == EXIT_FAILURE)
         resp_add(&ctx->resp, "-ERR DEL COMMAND\n");
     else
@@ -96,7 +96,8 @@ static size_t cmd_info(command_ctx_t *ctx)
               "Uptime: %ld seconds\n"
               "DB Size: %d\n"
               "DB Keys Used: %d\n",
-              (long)uptime, (int)db->size, (int)db->used);
+              (long)uptime, (int)db->keyspace->size,
+              (int)db->keyspace->used);
     return ctx->resp.len;
 }
 
@@ -135,7 +136,7 @@ static int tokenize_command(char *cmd, char **argv, int max_tokens)
 size_t command_execute(const char *payload, size_t len, char *out, size_t out_cap)
 {
     if (db == NULL) {
-        db = dictCreate();
+        db = db_create();
         start_time = time(NULL);
     }
     char cmd[MSG_MAX + 1];

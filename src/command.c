@@ -26,8 +26,7 @@ static void resp_add(respbuf *r, const char *s)
     r->len += slen;
 }
 
-__attribute__((format(printf, 2, 3)))
-static void resp_addf(respbuf *r, const char *fmt, ...)
+__attribute__((format(printf, 2, 3))) static void resp_addf(respbuf *r, const char *fmt, ...)
 {
     size_t avail = r->cap - r->len;
     if (avail == 0)
@@ -65,7 +64,17 @@ static size_t cmd_set(command_ctx_t *ctx)
         resp_add(&ctx->resp, "+OK\n");
     return ctx->resp.len;
 }
-
+static size_t cmd_setex(command_ctx_t *ctx)
+{
+    /* TODO: parse TTL from ctx->argv[3], compute expire_at */
+    int64_t expire_at = 0;
+    int res = db_setex(db, ctx->argv[1], ctx->argv[2], expire_at);
+    if (res == EXIT_FAILURE)
+        resp_add(&ctx->resp, "-ERR SETEX COMMAND\n");
+    else
+        resp_add(&ctx->resp, "+OK\n");
+    return ctx->resp.len;
+}
 static size_t cmd_keys(command_ctx_t *ctx)
 {
     ht_iter_t *iter = ht_iter_create(db->keyspace);
@@ -96,13 +105,12 @@ static size_t cmd_info(command_ctx_t *ctx)
               "Uptime: %ld seconds\n"
               "DB Size: %d\n"
               "DB Keys Used: %d\n",
-              (long)uptime, (int)db->keyspace->size,
-              (int)db->keyspace->used);
+              (long)uptime, (int)db->keyspace->size, (int)db->keyspace->used);
     return ctx->resp.len;
 }
 
 static struct kvCommand kvCommandTable[] = {
-    {"GET", cmd_get, 2},   {"SET", cmd_set, -3},  {"DEL", cmd_del, 2},
+    {"GET", cmd_get, 2},   {"SET", cmd_set, -3},  {"SETEX", cmd_setex, -4}, {"DEL", cmd_del, 2},
     {"KEYS", cmd_keys, 1}, {"INFO", cmd_info, 1}, {NULL, NULL, 0},
 };
 

@@ -1,4 +1,5 @@
 #include "ht.h"
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -7,9 +8,10 @@
 #define HT_INITIAL_SIZE 4
 #define LOAD_FACTOR 0.75
 
-ht_t *ht_create(void)
+ht_t *ht_create(ht_val_type_t val_type)
 {
     ht_t *ht = malloc(sizeof(*ht));
+    ht->val_type = val_type;
     ht->size = HT_INITIAL_SIZE;
     ht->sizemask = ht->size - 1;
     ht->used = 0;
@@ -29,44 +31,88 @@ static size_t ht_hash(const char *key)
     return hash;
 }
 
-int ht_set(ht_t *ht, const char *key, const char *value)
+static void ht_val_free(ht_t *ht, ht_entry_t *entry)
+{
+    if (ht->val_type == HT_VAL_STR)
+        free(entry->val.str);
+}
+
+/* Find existing entry or create a new one. Sets *found to indicate which. */
+static ht_entry_t *ht_upsert(ht_t *ht, const char *key, bool *found)
 {
     size_t index = ht_hash(key) & ht->sizemask;
 
-    /* Walk chain — check if key already exists */
     ht_entry_t *entry = ht->table[index];
     while (entry != NULL) {
         if (strcmp(entry->key, key) == 0) {
-            /* UPDATE: key exists, replace value */
-            free(entry->val);
-            entry->val = strdup(value);
-            return EXIT_SUCCESS;
+            *found = true;
+            return entry;
         }
         entry = entry->next;
     }
 
-    /* INSERT: key not found, prepend to chain head */
     ht_entry_t *new_entry = malloc(sizeof(*new_entry));
     if (new_entry == NULL) {
-        return EXIT_FAILURE;
+        *found = false;
+        return NULL;
     }
     new_entry->key = strdup(key);
-    new_entry->val = strdup(value);
     new_entry->next = ht->table[index];
     ht->table[index] = new_entry;
     ht->used++;
-    if ((double)ht->used / ht->size > LOAD_FACTOR)
+    *found = false;
+    return new_entry;
+}
+
+int ht_set_str(ht_t *ht, const char *key, const char *value)
+{
+    assert(ht->val_type == HT_VAL_STR);
+    bool found;
+    ht_entry_t *entry = ht_upsert(ht, key, &found);
+    if (entry == NULL)
+        return EXIT_FAILURE;
+    if (found)
+        free(entry->val.str);
+    entry->val.str = strdup(value);
+    if (!found && (double)ht->used / ht->size > LOAD_FACTOR)
         ht_resize(ht, ht->size * 2);
     return EXIT_SUCCESS;
 }
 
-char *ht_get(ht_t *ht, const char *key)
+int ht_set_i64(ht_t *ht, const char *key, int64_t value)
 {
+    assert(ht->val_type == HT_VAL_I64);
+    bool found;
+    ht_entry_t *entry = ht_upsert(ht, key, &found);
+    if (entry == NULL)
+        return EXIT_FAILURE;
+    entry->val.i64 = value;
+    if (!found && (double)ht->used / ht->size > LOAD_FACTOR)
+        ht_resize(ht, ht->size * 2);
+    return EXIT_SUCCESS;
+}
+
+char *ht_get_str(ht_t *ht, const char *key)
+{
+    assert(ht->val_type == HT_VAL_STR);
     size_t index = ht_hash(key) & ht->sizemask;
     ht_entry_t *entry = ht->table[index];
     while (entry != NULL) {
         if (strcmp(entry->key, key) == 0)
-            return entry->val;
+            return entry->val.str;
+        entry = entry->next;
+    }
+    return NULL;
+}
+
+int64_t *ht_get_i64(ht_t *ht, const char *key)
+{
+    assert(ht->val_type == HT_VAL_I64);
+    size_t index = ht_hash(key) & ht->sizemask;
+    ht_entry_t *entry = ht->table[index];
+    while (entry != NULL) {
+        if (strcmp(entry->key, key) == 0)
+            return &entry->val.i64;
         entry = entry->next;
     }
     return NULL;
@@ -84,7 +130,7 @@ int ht_del(ht_t *ht, const char *key)
             else
                 prev->next = entry->next;
             free(entry->key);
-            free(entry->val);
+            ht_val_free(ht, entry);
             free(entry);
             ht->used--;
             return EXIT_SUCCESS;
@@ -101,7 +147,7 @@ int ht_free(ht_t *ht)
         ht_entry_t *entry = ht->table[i];
         while (entry != NULL) {
             free(entry->key);
-            free(entry->val);
+            ht_val_free(ht, entry);
             ht_entry_t *next = entry->next;
             free(entry);
             entry = next;

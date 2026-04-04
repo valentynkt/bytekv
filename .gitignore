@@ -1,4 +1,4 @@
-build
-bytekv_asan_nodict.dSYM/Contents
-bytekv_debug.dSYM/Contents
-bytekv_nosanit.dSYM/Contents
+build/
+bytekv
+bytekv_*
+*.dSYM/

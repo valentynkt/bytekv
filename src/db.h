@@ -6,7 +6,8 @@
 typedef struct db {
     ht_t *keyspace;
     ht_t *expires;
-    int64_t now_ms; // Monotonic Clock, client should set it.
+    int64_t now_ms;
+    int64_t start_ms;
 } db_t;
 
 db_t *db_create(void);

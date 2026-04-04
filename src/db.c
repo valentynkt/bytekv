@@ -10,6 +10,7 @@ db_t *db_create(void)
     db->keyspace = ht_create(HT_VAL_STR);
     db->expires = ht_create(HT_VAL_I64);
     db->now_ms = now_ms();
+    db->start_ms = db->now_ms;
     return db;
 }
 
@@ -43,7 +44,9 @@ int db_persist(db_t *db, const char *key)
 
 int db_key_expire(db_t *db, const char *key, int64_t expire_at)
 {
-    return expire_at > 0 ? ht_set_i64(db->expires, key, expire_at) : EXIT_FAILURE;
+    if (expire_at <= 0 || ht_get_str(db->keyspace, key) == NULL)
+        return EXIT_FAILURE;
+    return ht_set_i64(db->expires, key, expire_at);
 }
 // Errors: -1 : No TTL, -2 : Key don't exist
 int64_t db_get_ttl(db_t *db, const char *key)
@@ -55,7 +58,7 @@ int64_t db_get_ttl(db_t *db, const char *key)
     if (expire_at == NULL) {
         return -1;
     }
-    return *expire_at;
+    return (*expire_at - db->now_ms) / 1000;
 }
 
 char *db_get(db_t *db, const char *key)

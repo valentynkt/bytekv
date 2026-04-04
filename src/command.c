@@ -1,8 +1,8 @@
 #include "command.h"
 #include "db.h"
 #include "util.h"
-#include <assert.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -10,14 +10,37 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <time.h>
 
 #define MAX_TOKENS 8
 
-static db_t *db = NULL;
-static time_t start_time = 0;
+/* types */
 
-/* respbuf helpers */
+typedef struct {
+    char *buf;
+    size_t cap;
+    size_t len;
+} respbuf;
+
+typedef struct {
+    int argc;
+    char **argv;
+    respbuf resp;
+} command_ctx_t;
+
+typedef void cmd_proc_t(command_ctx_t *ctx);
+
+typedef struct {
+    const char *name;
+    cmd_proc_t *proc;
+    int arity;
+} command_entry_t;
+
+
+/* state */
+
+static db_t *db = NULL;
+
+/* response helpers */
 
 static void resp_add(respbuf *r, const char *s)
 {
@@ -29,7 +52,8 @@ static void resp_add(respbuf *r, const char *s)
     r->len += slen;
 }
 
-__attribute__((format(printf, 2, 3))) static void resp_addf(respbuf *r, const char *fmt, ...)
+__attribute__((format(printf, 2, 3)))
+static void resp_addf(respbuf *r, const char *fmt, ...)
 {
     size_t avail = r->cap - r->len;
     if (avail == 0)
@@ -45,88 +69,117 @@ __attribute__((format(printf, 2, 3))) static void resp_addf(respbuf *r, const ch
     }
 }
 
+
+/* argument parsing */
+
+static bool parse_seconds(const char *s, int64_t *out)
+{
+    char *end;
+    int64_t seconds = strtoll(s, &end, 10);
+    if (end == s || *end != '\0' || seconds <= 0)
+        return false;
+    *out = seconds;
+    return true;
+}
+
+
 /* command handlers */
 
-static size_t cmd_get(command_ctx_t *ctx)
+static void cmd_get(command_ctx_t *ctx)
 {
-    char *val = db_get(db, ctx->argv[1]);
+    const char *key = ctx->argv[1];
+
+    char *val = db_get(db, key);
     if (val == NULL) {
         resp_add(&ctx->resp, "-ERR key not found\n");
-        return ctx->resp.len;
+        return;
     }
     resp_addf(&ctx->resp, "+%s\n", val);
-    return ctx->resp.len;
 }
-static size_t cmd_ttl(command_ctx_t *ctx)
+
+static void cmd_ttl(command_ctx_t *ctx)
 {
-    char *key = ctx->argv[1];
+    const char *key = ctx->argv[1];
+
     int64_t ttl = db_get_ttl(db, key);
     if (ttl == -2) {
         resp_add(&ctx->resp, "-ERR key not found\n");
-        return ctx->resp.len;
+        return;
     }
     if (ttl == -1) {
         resp_add(&ctx->resp, "-ERR key does not have TTL\n");
-        return ctx->resp.len;
+        return;
     }
     resp_addf(&ctx->resp, "+ Key - %s\nTTL = %" PRId64 "\n", key, ttl);
-    return ctx->resp.len;
 }
-static size_t cmd_set(command_ctx_t *ctx)
+
+static void cmd_set(command_ctx_t *ctx)
 {
-    int res = db_set(db, ctx->argv[1], ctx->argv[2]);
-    if (res == EXIT_FAILURE)
+    const char *key = ctx->argv[1];
+    const char *value = ctx->argv[2];
+
+    if (db_set(db, key, value) == EXIT_FAILURE)
         resp_add(&ctx->resp, "-ERR SET COMMAND\n");
     else
         resp_add(&ctx->resp, "+OK\n");
-    return ctx->resp.len;
 }
-static size_t cmd_setex(command_ctx_t *ctx)
+
+static void cmd_setex(command_ctx_t *ctx)
 {
-    char *end;
-    int64_t seconds = strtoll(ctx->argv[3], &end, 10);
-    if (end == ctx->argv[3] || *end != '\0' || seconds <= 0) {
+    const char *key = ctx->argv[1];
+    const char *ttl_str = ctx->argv[2];
+    const char *value = ctx->argv[3];
+
+    int64_t seconds;
+    if (!parse_seconds(ttl_str, &seconds)) {
         resp_add(&ctx->resp, "-ERR invalid expire time\n");
-        return ctx->resp.len;
+        return;
     }
     int64_t expire_at = db->now_ms + (seconds * 1000);
-    int res = db_setex(db, ctx->argv[1], ctx->argv[2], expire_at);
-    if (res == EXIT_FAILURE)
+    if (db_setex(db, key, value, expire_at) == EXIT_FAILURE)
         resp_add(&ctx->resp, "-ERR SETEX COMMAND\n");
     else
         resp_add(&ctx->resp, "+OK\n");
-    return ctx->resp.len;
 }
-static size_t cmd_expire(command_ctx_t *ctx)
+
+static void cmd_expire(command_ctx_t *ctx)
 {
-    // ToDo: DRY violation, could be extracted. Duplication with logic in cmd_setex
-    char *end;
-    char *ttl = ctx->argv[3];
-    char *key = ctx->argv[1];
-    int64_t seconds = strtoll(ttl, &end, 10);
-    if (end == ttl || *end != '\0' || seconds <= 0) {
+    const char *key = ctx->argv[1];
+    const char *ttl_str = ctx->argv[2];
+
+    int64_t seconds;
+    if (!parse_seconds(ttl_str, &seconds)) {
         resp_add(&ctx->resp, "-ERR invalid expire time\n");
-        return ctx->resp.len;
+        return;
     }
     int64_t expire_at = db->now_ms + (seconds * 1000);
-    int res = db_key_expire(db, key, expire_at);
-    if (res == EXIT_FAILURE)
+    if (db_key_expire(db, key, expire_at) == EXIT_FAILURE)
         resp_add(&ctx->resp, "-ERR EXPIRE COMMAND\n");
     else
         resp_add(&ctx->resp, "+OK\n");
-    return ctx->resp.len;
 }
-static size_t cmd_persist(command_ctx_t *ctx)
+
+static void cmd_persist(command_ctx_t *ctx)
 {
-    char *key = ctx->argv[1];
-    if (db_persist(db, key) == EXIT_FAILURE) {
+    const char *key = ctx->argv[1];
+
+    if (db_persist(db, key) == EXIT_FAILURE)
         resp_add(&ctx->resp, "-ERR PERSIST COMMAND\n");
-    } else {
+    else
         resp_add(&ctx->resp, "+OK\n");
-    }
-    return ctx->resp.len;
 }
-static size_t cmd_keys(command_ctx_t *ctx)
+
+static void cmd_del(command_ctx_t *ctx)
+{
+    const char *key = ctx->argv[1];
+
+    if (db_del(db, key) == EXIT_FAILURE)
+        resp_add(&ctx->resp, "-ERR DEL COMMAND\n");
+    else
+        resp_add(&ctx->resp, "+OK\n");
+}
+
+static void cmd_keys(command_ctx_t *ctx)
 {
     ht_iter_t *iter = ht_iter_create(db->keyspace);
     ht_entry_t *entry;
@@ -136,46 +189,46 @@ static size_t cmd_keys(command_ctx_t *ctx)
         count++;
     }
     free(iter);
-    return ctx->resp.len;
 }
 
-static size_t cmd_del(command_ctx_t *ctx)
+static void cmd_info(command_ctx_t *ctx)
 {
-    int res = db_del(db, ctx->argv[1]);
-    if (res == EXIT_FAILURE)
-        resp_add(&ctx->resp, "-ERR DEL COMMAND\n");
-    else
-        resp_add(&ctx->resp, "+OK\n");
-    return ctx->resp.len;
-}
-
-static size_t cmd_info(command_ctx_t *ctx)
-{
-    time_t uptime = time(NULL) - start_time;
+    int64_t uptime_s = (db->now_ms - db->start_ms) / 1000;
     resp_addf(&ctx->resp,
-              "Uptime: %ld seconds\n"
-              "DB Size: %d\n"
-              "DB Keys Used: %d\n",
-              (long)uptime, (int)db->keyspace->size, (int)db->keyspace->used);
-    return ctx->resp.len;
+              "Uptime: %" PRId64 " seconds\n"
+              "DB Size: %zu\n"
+              "DB Keys Used: %zu\n",
+              uptime_s, db->keyspace->size, db->keyspace->used);
 }
-static struct kvCommand kvCommandTable[] = {
-    {"GET", cmd_get, 2},     {"TTL", cmd_ttl, 2},       {"SET", cmd_set, -3},
-    {"SETEX", cmd_setex, 4}, {"EXPIRE", cmd_expire, 3}, {"PERSIST", cmd_persist, 2},
-    {"DEL", cmd_del, 2},     {"KEYS", cmd_keys, 1},     {"INFO", cmd_info, 1},
-    {NULL, NULL, 0},
+
+
+/* command table */
+
+static command_entry_t command_table[] = {
+    {"GET",     cmd_get,      2},
+    {"TTL",     cmd_ttl,      2},
+    {"SET",     cmd_set,     -3},
+    {"SETEX",   cmd_setex,    4},
+    {"EXPIRE",  cmd_expire,   3},
+    {"PERSIST", cmd_persist,   2},
+    {"DEL",     cmd_del,      2},
+    {"KEYS",    cmd_keys,     1},
+    {"INFO",    cmd_info,     1},
+    {NULL,      NULL,         0},
 };
 
-static struct kvCommand *lookupCommand(const char *name)
+static command_entry_t *lookup_command(const char *name)
 {
-    for (int i = 0; kvCommandTable[i].name != NULL; i++) {
-        if (strcasecmp(name, kvCommandTable[i].name) == 0)
-            return &kvCommandTable[i];
+    for (int i = 0; command_table[i].name != NULL; i++) {
+        if (strcasecmp(name, command_table[i].name) == 0)
+            return &command_table[i];
     }
     return NULL;
 }
 
-// tokenizer
+
+/* tokenizer */
+
 static int tokenize_command(char *cmd, char **argv, int max_tokens)
 {
     char *p = cmd;
@@ -192,13 +245,26 @@ static int tokenize_command(char *cmd, char **argv, int max_tokens)
     return argc;
 }
 
-// dispatch
+
+/* public API */
+
+void command_init(void)
+{
+    db = db_create();
+}
+
+void command_shutdown(void)
+{
+    if (db != NULL) {
+        db_free(db);
+        db = NULL;
+    }
+}
+
 size_t command_execute(const char *payload, size_t len, char *out, size_t out_cap)
 {
-    if (db == NULL) {
-        db = db_create();
-        start_time = time(NULL);
-    }
+    db->now_ms = now_ms();
+
     char cmd[MSG_MAX + 1];
     memcpy(cmd, payload, len);
     cmd[len] = '\0';
@@ -213,18 +279,19 @@ size_t command_execute(const char *payload, size_t len, char *out, size_t out_ca
         return resp.len;
     }
 
-    struct kvCommand *command = lookupCommand(argv[0]);
-    if (command == NULL) {
+    command_entry_t *entry = lookup_command(argv[0]);
+    if (entry == NULL) {
         resp_add(&resp, "-ERR unknown command\n");
         return resp.len;
     }
 
-    if ((command->arity > 0 && argc != command->arity) ||
-        (command->arity < 0 && argc < -(command->arity))) {
+    if ((entry->arity > 0 && argc != entry->arity) ||
+        (entry->arity < 0 && argc < -(entry->arity))) {
         resp_add(&resp, "-ERR wrong number of arguments\n");
         return resp.len;
     }
 
     command_ctx_t ctx = {argc, argv, resp};
-    return command->proc(&ctx);
+    entry->proc(&ctx);
+    return ctx.resp.len;
 }

@@ -184,32 +184,35 @@ static void on_accept(event_loop_t *el, int server_fd)
 }
 // ToDo: could be refined to track the 2 SIGINT, which means that user want imediate shutdown
 // without waiting.
+static void sig_write(const char *s)
+{
+    write(STDOUT_FILENO, s, strlen(s));
+}
+
 static void sigShutdownHandler(int sig)
 {
-    char *msg;
+    if (server.el.stop && sig == SIGINT) {
+        sig_write("FORCE SHUTDOWN\n");
+        _exit(1);
+    }
+
     switch (sig) {
     case SIGINT:
-        msg = "Received SIGINT scheduling shutdown...";
+        sig_write("Received SIGINT scheduling shutdown...\n");
         break;
     case SIGTERM:
-        msg = "Received SIGTERM scheduling shutdown...";
+        sig_write("Received SIGTERM scheduling shutdown...\n");
         break;
     default:
-        msg = "Received shutdown signal, scheduling shutdown...";
-    };
-    if (server.el.stop && sig == SIGINT) {
-        printf("FORCE SHUTDOWN");
-        exit(1);
+        sig_write("Received shutdown signal, scheduling shutdown...\n");
     }
-    // For now we just set the state, so we could handle it in our event loop, and than process
-    // it somehow.
-    printf("SIGNAL: %d\nMessage: %s\n", sig, msg);
     server.el.stop = 1;
 }
 
-static void setupSignalHandlers()
+static void setupSignalHandlers(void)
 {
     struct sigaction sig_act;
+    sigemptyset(&sig_act.sa_mask);
     sig_act.sa_flags = 0;
     sig_act.sa_handler = sigShutdownHandler;
     sigaction(SIGINT, &sig_act, NULL);
@@ -236,6 +239,8 @@ int init_server(void)
         return EXIT_FAILURE;
     }
 
+    server.server_fd = server_fd;
+
     if (el_add(&server.el, server_fd, on_accept) == -1) {
         close(server_fd);
         el_cleanup(&server.el);
@@ -246,7 +251,10 @@ int init_server(void)
 
 int run_networking(void)
 {
+    command_init();
+
     if (init_server() == EXIT_FAILURE) {
+        command_shutdown();
         return EXIT_FAILURE;
     }
 
@@ -258,5 +266,6 @@ int run_networking(void)
     }
     close(server.server_fd);
     el_cleanup(&server.el);
-    return EXIT_FAILURE;
+    command_shutdown();
+    return EXIT_SUCCESS;
 }

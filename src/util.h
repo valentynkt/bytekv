@@ -18,5 +18,6 @@
 ssize_t write_all(int fd, const char *buf, size_t len);
 int set_non_blocking(int fd);
 int create_listener(void);
+int64_t now_ms(void);
 
 #endif

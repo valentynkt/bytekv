@@ -74,7 +74,8 @@ int ht_set_str(ht_t *ht, const char *key, const char *value)
     if (found)
         free(entry->val.str);
     entry->val.str = strdup(value);
-    if (!found && (double)ht->used / ht->size > LOAD_FACTOR)
+    bool need_resize = !found && (double)ht->used / ht->size > LOAD_FACTOR;
+    if (need_resize)
         ht_resize(ht, ht->size * 2);
     return EXIT_SUCCESS;
 }
@@ -87,35 +88,35 @@ int ht_set_i64(ht_t *ht, const char *key, int64_t value)
     if (entry == NULL)
         return EXIT_FAILURE;
     entry->val.i64 = value;
-    if (!found && (double)ht->used / ht->size > LOAD_FACTOR)
+    bool need_resize = !found && (double)ht->used / ht->size > LOAD_FACTOR;
+    if (need_resize)
         ht_resize(ht, ht->size * 2);
     return EXIT_SUCCESS;
+}
+static ht_entry_t *ht_find(ht_t *ht, const char *key)
+{
+    size_t index = ht_hash(key) & ht->sizemask;
+    ht_entry_t *entry = ht->table[index];
+    while (entry != NULL) {
+        if (strcmp(entry->key, key) == 0)
+            return entry;
+        entry = entry->next;
+    }
+    return NULL;
 }
 
 char *ht_get_str(ht_t *ht, const char *key)
 {
     assert(ht->val_type == HT_VAL_STR);
-    size_t index = ht_hash(key) & ht->sizemask;
-    ht_entry_t *entry = ht->table[index];
-    while (entry != NULL) {
-        if (strcmp(entry->key, key) == 0)
-            return entry->val.str;
-        entry = entry->next;
-    }
-    return NULL;
+    ht_entry_t *entry = ht_find(ht, key);
+    return entry ? entry->val.str : NULL;
 }
 
 int64_t *ht_get_i64(ht_t *ht, const char *key)
 {
     assert(ht->val_type == HT_VAL_I64);
-    size_t index = ht_hash(key) & ht->sizemask;
-    ht_entry_t *entry = ht->table[index];
-    while (entry != NULL) {
-        if (strcmp(entry->key, key) == 0)
-            return &entry->val.i64;
-        entry = entry->next;
-    }
-    return NULL;
+    ht_entry_t *entry = ht_find(ht, key);
+    return entry ? &entry->val.i64 : NULL;
 }
 
 int ht_del(ht_t *ht, const char *key)

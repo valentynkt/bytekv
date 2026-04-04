@@ -1,8 +1,11 @@
 #include "command.h"
 #include "db.h"
 #include "util.h"
+#include <assert.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,7 +57,21 @@ static size_t cmd_get(command_ctx_t *ctx)
     resp_addf(&ctx->resp, "+%s\n", val);
     return ctx->resp.len;
 }
-
+static size_t cmd_ttl(command_ctx_t *ctx)
+{
+    char *key = ctx->argv[1];
+    int64_t ttl = db_get_ttl(db, key);
+    if (ttl == -2) {
+        resp_add(&ctx->resp, "-ERR key not found\n");
+        return ctx->resp.len;
+    }
+    if (ttl == -1) {
+        resp_add(&ctx->resp, "-ERR key does not have TTL\n");
+        return ctx->resp.len;
+    }
+    resp_addf(&ctx->resp, "+ Key - %s\nTTL = %" PRId64 "\n", key, ttl);
+    return ctx->resp.len;
+}
 static size_t cmd_set(command_ctx_t *ctx)
 {
     int res = db_set(db, ctx->argv[1], ctx->argv[2]);
@@ -66,13 +83,47 @@ static size_t cmd_set(command_ctx_t *ctx)
 }
 static size_t cmd_setex(command_ctx_t *ctx)
 {
-    /* TODO: parse TTL from ctx->argv[3], compute expire_at */
-    int64_t expire_at = 0;
+    char *end;
+    int64_t seconds = strtoll(ctx->argv[3], &end, 10);
+    if (end == ctx->argv[3] || *end != '\0' || seconds <= 0) {
+        resp_add(&ctx->resp, "-ERR invalid expire time\n");
+        return ctx->resp.len;
+    }
+    int64_t expire_at = db->now_ms + (seconds * 1000);
     int res = db_setex(db, ctx->argv[1], ctx->argv[2], expire_at);
     if (res == EXIT_FAILURE)
         resp_add(&ctx->resp, "-ERR SETEX COMMAND\n");
     else
         resp_add(&ctx->resp, "+OK\n");
+    return ctx->resp.len;
+}
+static size_t cmd_expire(command_ctx_t *ctx)
+{
+    // ToDo: DRY violation, could be extracted. Duplication with logic in cmd_setex
+    char *end;
+    char *ttl = ctx->argv[3];
+    char *key = ctx->argv[1];
+    int64_t seconds = strtoll(ttl, &end, 10);
+    if (end == ttl || *end != '\0' || seconds <= 0) {
+        resp_add(&ctx->resp, "-ERR invalid expire time\n");
+        return ctx->resp.len;
+    }
+    int64_t expire_at = db->now_ms + (seconds * 1000);
+    int res = db_key_expire(db, key, expire_at);
+    if (res == EXIT_FAILURE)
+        resp_add(&ctx->resp, "-ERR EXPIRE COMMAND\n");
+    else
+        resp_add(&ctx->resp, "+OK\n");
+    return ctx->resp.len;
+}
+static size_t cmd_persist(command_ctx_t *ctx)
+{
+    char *key = ctx->argv[1];
+    if (db_persist(db, key) == EXIT_FAILURE) {
+        resp_add(&ctx->resp, "-ERR PERSIST COMMAND\n");
+    } else {
+        resp_add(&ctx->resp, "+OK\n");
+    }
     return ctx->resp.len;
 }
 static size_t cmd_keys(command_ctx_t *ctx)
@@ -108,10 +159,11 @@ static size_t cmd_info(command_ctx_t *ctx)
               (long)uptime, (int)db->keyspace->size, (int)db->keyspace->used);
     return ctx->resp.len;
 }
-
 static struct kvCommand kvCommandTable[] = {
-    {"GET", cmd_get, 2},   {"SET", cmd_set, -3},  {"SETEX", cmd_setex, -4}, {"DEL", cmd_del, 2},
-    {"KEYS", cmd_keys, 1}, {"INFO", cmd_info, 1}, {NULL, NULL, 0},
+    {"GET", cmd_get, 2},     {"TTL", cmd_ttl, 2},       {"SET", cmd_set, -3},
+    {"SETEX", cmd_setex, 4}, {"EXPIRE", cmd_expire, 3}, {"PERSIST", cmd_persist, 2},
+    {"DEL", cmd_del, 2},     {"KEYS", cmd_keys, 1},     {"INFO", cmd_info, 1},
+    {NULL, NULL, 0},
 };
 
 static struct kvCommand *lookupCommand(const char *name)

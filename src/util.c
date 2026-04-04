@@ -1,4 +1,6 @@
 #include "util.h"
+#include <stdint.h>
+#include <time.h>
 
 ssize_t write_all(int fd, const char *buf, size_t len)
 {
@@ -64,4 +66,12 @@ int create_listener(void)
 fail:
     close(fd);
     return -1;
+}
+
+int64_t now_ms(void)
+{
+    struct timespec *tp = NULL;
+    clock_gettime(CLOCK_MONOTONIC, tp);
+    int64_t now_in_ms = (tp->tv_sec * 1000) + (tp->tv_nsec / 1000000);
+    return now_in_ms;
 }

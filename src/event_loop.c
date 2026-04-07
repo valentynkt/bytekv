@@ -79,6 +79,9 @@ int el_run(event_loop_t *el)
     struct kevent events[MAX_EVENTS];
 
     for (;;) {
+        if (el->stop) {
+            return 0;
+        }
         int n = kevent(el->kq, NULL, 0, events, MAX_EVENTS, NULL);
         if (n == -1) {
             if (errno == EINTR) {

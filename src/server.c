@@ -10,11 +10,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 server_t server;
 
 static void on_write(event_loop_t *el, int fd);
 static void on_read(event_loop_t *el, int fd);
+static void on_shutdown(event_loop_t *el, int fd);
+
 static void process_buffer(event_loop_t *el, int fd);
 
 static void remove_client(event_loop_t *el, int fd)
@@ -23,6 +27,7 @@ static void remove_client(event_loop_t *el, int fd)
     el_remove(el, fd);
     close(fd);
     server.clients[fd] = (client_t){0};
+    server.clients_count--;
 }
 
 static bool queue_write(event_loop_t *el, int fd, const char *data, size_t len)
@@ -155,6 +160,29 @@ static void on_read(event_loop_t *el, int fd)
     c->len += n;
     process_buffer(el, fd);
 }
+static void on_shutdown(event_loop_t *el, int fd)
+{
+    unsigned char buf[16];
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n <= 0)
+            break;
+        for (ssize_t i = 0; i < n; i++) {
+            switch (buf[i]) {
+            case SIGINT:
+                printf("Received SIGINT, shutting down...\n");
+                break;
+            case SIGTERM:
+                printf("Received SIGTERM, shutting down...\n");
+                break;
+            default:
+                printf("Received signal %d, shutting down...\n", buf[i]);
+                break;
+            }
+        }
+    }
+    el->stop = 1;
+}
 
 static void on_accept(event_loop_t *el, int server_fd)
 {
@@ -175,40 +203,29 @@ static void on_accept(event_loop_t *el, int server_fd)
     }
 
     server.clients[fd] = (client_t){.active = true};
+    server.clients_count++;
     printf("client connected (fd=%d)\n", fd);
 
     if (el_add(el, fd, on_read) == -1) {
         close(fd);
         server.clients[fd] = (client_t){0};
+        server.clients_count--;
     }
 }
-// ToDo: could be refined to track the 2 SIGINT, which means that user want imediate shutdown
-// without waiting.
-static void sig_write(const char *s)
-{
-    write(STDOUT_FILENO, s, strlen(s));
-}
+static volatile sig_atomic_t shutdown_signaled = 0;
 
 static void sigShutdownHandler(int sig)
 {
-    if (server.el.stop && sig == SIGINT) {
-        sig_write("FORCE SHUTDOWN\n");
+    if (shutdown_signaled && sig == SIGINT) {
+        static const char msg[] = "FORCE SHUTDOWN\n";
+        write(STDERR_FILENO, msg, sizeof(msg) - 1);
         _exit(1);
     }
+    shutdown_signaled = 1;
 
-    switch (sig) {
-    case SIGINT:
-        sig_write("Received SIGINT scheduling shutdown...\n");
-        break;
-    case SIGTERM:
-        sig_write("Received SIGTERM scheduling shutdown...\n");
-        break;
-    default:
-        sig_write("Received shutdown signal, scheduling shutdown...\n");
-    }
-    server.el.stop = 1;
+    unsigned char byte = (unsigned char)sig;
+    write(server.pipe[1], &byte, 1);
 }
-
 static void setupSignalHandlers(void)
 {
     struct sigaction sig_act;
@@ -238,15 +255,36 @@ int init_server(void)
         close(server_fd);
         return EXIT_FAILURE;
     }
-
-    server.server_fd = server_fd;
-
-    if (el_add(&server.el, server_fd, on_accept) == -1) {
+    if (pipe(server.pipe) == -1) {
         close(server_fd);
-        el_cleanup(&server.el);
+        close(server.pipe[0]);
+        close(server.pipe[1]);
         return EXIT_FAILURE;
     }
+
+    if (set_non_blocking(server.pipe[0]) == -1 || set_non_blocking(server.pipe[1]) == -1) {
+        close(server_fd);
+        close(server.pipe[0]);
+        close(server.pipe[1]);
+        return EXIT_FAILURE;
+    }
+
+    server.server_fd = server_fd;
+    int pipe_rd = server.pipe[0];
+    if (el_add(&server.el, pipe_rd, on_shutdown) == -1) {
+        goto shutdown;
+    }
+
+    if (el_add(&server.el, server_fd, on_accept) == -1) {
+        goto shutdown;
+    }
+
     return EXIT_SUCCESS;
+
+shutdown:
+    close(server_fd);
+    el_cleanup(&server.el);
+    return EXIT_FAILURE;
 }
 
 int run_networking(void)
@@ -261,10 +299,14 @@ int run_networking(void)
     el_run(&server.el);
 
     for (int fd = 0; fd < MAX_CLIENTS_FD; fd++) {
-        if (server.clients[fd].active)
+        if (server.clients[fd].active) {
+            shutdown(fd, SHUT_WR);
             close(fd);
+        }
     }
     close(server.server_fd);
+    close(server.pipe[0]);
+    close(server.pipe[1]);
     el_cleanup(&server.el);
     command_shutdown();
     return EXIT_SUCCESS;

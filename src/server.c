@@ -256,9 +256,8 @@ int init_server(void)
         return EXIT_FAILURE;
     }
     if (pipe(server.pipe) == -1) {
+        perror("pipe");
         close(server_fd);
-        close(server.pipe[0]);
-        close(server.pipe[1]);
         return EXIT_FAILURE;
     }
 

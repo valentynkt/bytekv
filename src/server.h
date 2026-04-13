@@ -18,11 +18,12 @@ typedef struct {
 
 typedef struct {
     int port;
-    int backlog;
-    int active_expire_threshold;
-    int active_expire_samples;
-    int active_expire_timeout_ms;
-    int el_poll_timeout_ms;
+    int tcp_backlog;
+    int hz;
+    bool active_expire_enabled;
+    int active_expire_percent;
+    int active_expire_keys_per_round;
+    int active_expire_budget_ms;
 } server_config_t;
 
 typedef struct {
@@ -32,7 +33,6 @@ typedef struct {
     client_t clients[MAX_FDS];
     size_t clients_count;
     int pipe[2];
-    bool active_expire;
     db_t *db;
 } server_t;
 

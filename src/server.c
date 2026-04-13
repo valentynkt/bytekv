@@ -232,10 +232,12 @@ static void active_expire(void) {
   int64_t start = server.db->now_ms;
   int64_t current = start;
   server_config_t *cfg = &server.config;
-  while (current - start < cfg->active_expire_timeout_ms) {
-    size_t expired = db_active_sweep(server.db, cfg->active_expire_samples);
-    bool below_threshold = expired * 100 / cfg->active_expire_samples <
-                           (size_t)cfg->active_expire_threshold;
+  while (current - start < cfg->active_expire_budget_ms) {
+    size_t expired =
+        db_active_sweep(server.db, cfg->active_expire_keys_per_round);
+    bool below_threshold =
+        expired * 100 / cfg->active_expire_keys_per_round <
+        (size_t)cfg->active_expire_percent;
     if (below_threshold)
       break;
     current = now_ms();
@@ -245,18 +247,19 @@ static void active_expire(void) {
 static void before_sleep(void) {
   server.db->now_ms = now_ms();
 
-  if (server.active_expire) {
+  if (server.config.active_expire_enabled) {
     active_expire();
   }
 }
 
 static void init_server_config(void) {
   server.config.port = CONFIG_DEFAULT_PORT;
-  server.config.backlog = CONFIG_DEFAULT_BACKLOG;
-  server.config.active_expire_threshold = CONFIG_DEFAULT_ACTIVE_EXPIRE_THRESHOLD;
-  server.config.active_expire_samples = CONFIG_DEFAULT_ACTIVE_EXPIRE_SAMPLES;
-  server.config.active_expire_timeout_ms = CONFIG_DEFAULT_ACTIVE_EXPIRE_TIMEOUT_MS;
-  server.config.el_poll_timeout_ms = CONFIG_DEFAULT_EL_POLL_TIMEOUT_MS;
+  server.config.tcp_backlog = CONFIG_DEFAULT_TCP_BACKLOG;
+  server.config.hz = CONFIG_DEFAULT_HZ;
+  server.config.active_expire_enabled = CONFIG_DEFAULT_ACTIVE_EXPIRE_ENABLED;
+  server.config.active_expire_percent = CONFIG_DEFAULT_ACTIVE_EXPIRE_PERCENT;
+  server.config.active_expire_keys_per_round = CONFIG_DEFAULT_ACTIVE_EXPIRE_KEYS_PER_ROUND;
+  server.config.active_expire_budget_ms = CONFIG_DEFAULT_ACTIVE_EXPIRE_BUDGET_MS;
 }
 
 int init_server(void) {
@@ -264,7 +267,7 @@ int init_server(void) {
   setupSignalHandlers();
 
   int server_fd =
-      create_listener(server.config.port, server.config.backlog);
+      create_listener(server.config.port, server.config.tcp_backlog);
   if (server_fd == -1)
     return EXIT_FAILURE;
 
@@ -280,8 +283,7 @@ int init_server(void) {
     return EXIT_FAILURE;
   }
   server.el.before_sleep_proc = before_sleep;
-  server.el.poll_timeout_ms = server.config.el_poll_timeout_ms;
-  server.active_expire = true;
+  server.el.poll_timeout_ms = 1000 / server.config.hz;
   if (pipe(server.pipe) == -1) {
     perror("pipe");
     close(server_fd);

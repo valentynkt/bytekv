@@ -1,5 +1,5 @@
 #include "server.h"
 int main(void)
 {
-    return run_networking();
+    return server_main();
 }

@@ -33,11 +33,12 @@ typedef struct {
     client_t clients[MAX_FDS];
     size_t clients_count;
     int pipe[2];
+    long long cronloops;
     db_t *db;
 } server_t;
 
 extern server_t server;
 
-int run_networking(void);
+int server_main(void);
 
 #endif

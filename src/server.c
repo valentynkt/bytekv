@@ -1,18 +1,14 @@
 #include "server.h"
 #include "command.h"
-#include "event_loop.h"
 #include "util.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <time.h>
 #include <unistd.h>
 server_t server;
 
@@ -246,6 +242,7 @@ static void active_expire(void) {
 
 static void before_sleep(void) {
   server.db->now_ms = now_ms();
+  server.cronloops++;
 
   if (server.config.active_expire_enabled) {
     active_expire();
@@ -316,7 +313,7 @@ shutdown:
   return EXIT_FAILURE;
 }
 
-int run_networking(void) {
+int server_main(void) {
   server.db = db_create();
 
   if (init_server() == EXIT_FAILURE) {

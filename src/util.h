@@ -12,9 +12,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define PORT 9999
-#define BACKLOG 5
-#define MSG_MAX 4096
 
 typedef size_t ustime_t; /* microsecond time type. */
 typedef size_t mstime_t; /* millisecond time type. */
@@ -24,7 +21,7 @@ mstime_t mstime(void);
 
 ssize_t write_all(int fd, const char *buf, size_t len);
 int set_non_blocking(int fd);
-int create_listener(void);
+int create_listener(int port, int backlog);
 int64_t now_ms(void);
 
 #endif

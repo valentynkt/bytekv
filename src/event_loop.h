@@ -1,7 +1,7 @@
 #ifndef EVENT_LOOP_H
 #define EVENT_LOOP_H
 #include <stdbool.h>
-#define MAX_FDS 1024
+#include "config.h"
 
 typedef struct event_loop event_loop_t;
 typedef void (*el_handler_fn)(event_loop_t *el, int fd);

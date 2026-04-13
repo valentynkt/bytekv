@@ -1,0 +1,19 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+/* Compile-time limits */
+#define MAX_FDS 1024
+#define MAX_EVENTS 64
+#define MAX_CLIENTS_FD 1024
+#define MSG_MAX 4096
+#define FRAME_HDR_SIZE 4
+#define WBUF_SIZE ((MSG_MAX + FRAME_HDR_SIZE) * 2)
+
+/* Default values for runtime config */
+#define CONFIG_DEFAULT_PORT 9999
+#define CONFIG_DEFAULT_BACKLOG 5
+#define CONFIG_DEFAULT_ACTIVE_EXPIRE_THRESHOLD 25
+#define CONFIG_DEFAULT_ACTIVE_EXPIRE_SAMPLES 10
+#define CONFIG_DEFAULT_ACTIVE_EXPIRE_TIMEOUT_MS 5000
+
+#endif

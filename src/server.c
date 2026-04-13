@@ -227,20 +227,41 @@ static void setupSignalHandlers(void) {
   sigaction(SIGINT, &sig_act, NULL);
   sigaction(SIGTERM, &sig_act, NULL);
 }
-void before_sleep(void) {
-  // active expiry
-  printf("[LOG] Before Sleep Started\n. kq: %d", server.el.kq);
+static void active_expire(void) {
+  server.db->now_ms = now_ms();
+  int64_t start = server.db->now_ms;
+  int64_t current = start;
+  server_config_t *cfg = &server.config;
+  while (current - start < cfg->active_expire_timeout_ms) {
+    size_t expired = db_active_sweep(server.db, cfg->active_expire_samples);
+    bool below_threshold = expired * 100 / cfg->active_expire_samples <
+                           (size_t)cfg->active_expire_threshold;
+    if (below_threshold)
+      break;
+    current = now_ms();
+  }
+}
 
+void before_sleep(void) {
   if (server.active_expire) {
     active_expire();
   }
-  // AOF flushing
+}
+
+static void init_server_config(void) {
+  server.config.port = CONFIG_DEFAULT_PORT;
+  server.config.backlog = CONFIG_DEFAULT_BACKLOG;
+  server.config.active_expire_threshold = CONFIG_DEFAULT_ACTIVE_EXPIRE_THRESHOLD;
+  server.config.active_expire_samples = CONFIG_DEFAULT_ACTIVE_EXPIRE_SAMPLES;
+  server.config.active_expire_timeout_ms = CONFIG_DEFAULT_ACTIVE_EXPIRE_TIMEOUT_MS;
 }
 
 int init_server(void) {
+  init_server_config();
   setupSignalHandlers();
 
-  int server_fd = create_listener();
+  int server_fd =
+      create_listener(server.config.port, server.config.backlog);
   if (server_fd == -1)
     return EXIT_FAILURE;
 
@@ -249,7 +270,7 @@ int init_server(void) {
     return EXIT_FAILURE;
   }
 
-  printf("[framing] listening on port %d\n", PORT);
+  printf("[framing] listening on port %d\n", server.config.port);
 
   if (el_init(&server.el) == -1) {
     close(server_fd);
@@ -291,10 +312,8 @@ shutdown:
 
 int run_networking(void) {
   server.db = db_create();
-  command_init();
 
   if (init_server() == EXIT_FAILURE) {
-    command_shutdown();
     db_free(server.db);
     return EXIT_FAILURE;
   }
@@ -311,7 +330,6 @@ int run_networking(void) {
   close(server.pipe[0]);
   close(server.pipe[1]);
   el_cleanup(&server.el);
-  command_shutdown();
   db_free(server.db);
   return EXIT_SUCCESS;
 }

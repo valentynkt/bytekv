@@ -43,7 +43,7 @@ int set_non_blocking(int fd) {
   return 0;
 }
 
-int create_listener(void) {
+int create_listener(int port, int backlog) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd == -1) {
     perror("socket");
@@ -58,7 +58,7 @@ int create_listener(void) {
 
   struct sockaddr_in addr = {
       .sin_family = AF_INET,
-      .sin_port = htons(PORT),
+      .sin_port = htons(port),
       .sin_addr.s_addr = INADDR_ANY,
   };
 
@@ -67,7 +67,7 @@ int create_listener(void) {
     goto fail;
   }
 
-  if (listen(fd, BACKLOG) == -1) {
+  if (listen(fd, backlog) == -1) {
     perror("listen");
     goto fail;
   }

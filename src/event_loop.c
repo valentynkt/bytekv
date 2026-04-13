@@ -10,7 +10,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define MAX_EVENTS 64
 
 int el_init(event_loop_t *el) {
   memset(el->read_handlers, 0, sizeof(el->read_handlers));

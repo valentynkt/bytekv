@@ -219,30 +219,6 @@ static int tokenize_command(char *cmd, char **argv, int max_tokens) {
 
 /* public API */
 
-#define ACTIVE_EXPIRE_TRESHOLD_PERS 25
-#define ACTIVE_EXPIRE_NUM_ITEMS 10
-#define ACTIVE_EXPIRE_MS_TIMEOUT 5000
-
-void active_expire(void) {
-  printf("[LOG] Active Expiry Started\n");
-  server.db->now_ms = now_ms();
-  int64_t start = server.db->now_ms;
-  int64_t current = start;
-  while (current - start < ACTIVE_EXPIRE_MS_TIMEOUT) {
-    size_t expired = db_active_sweep(server.db, ACTIVE_EXPIRE_NUM_ITEMS);
-    bool is_below_treshold =
-        expired * 100 / ACTIVE_EXPIRE_NUM_ITEMS < ACTIVE_EXPIRE_TRESHOLD_PERS;
-    if (is_below_treshold) {
-      break;
-    }
-    current = now_ms();
-  }
-}
-
-void command_init(void) {}
-
-void command_shutdown(void) {}
-
 size_t command_execute(const char *payload, size_t len, char *out,
                        size_t out_cap) {
   server.db->now_ms = now_ms();

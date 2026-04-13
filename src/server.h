@@ -6,15 +6,7 @@
 #include "config.h"
 #include "db.h"
 #include "event_loop.h"
-
-typedef struct {
-    bool active;
-    char buf[MSG_MAX + FRAME_HDR_SIZE]; /* read buffer */
-    size_t len;                         /* read buffer: bytes accumulated */
-    char wbuf[WBUF_SIZE];               /* write buffer */
-    size_t wlen;                        /* write buffer: total bytes queued */
-    size_t woff;                        /* write buffer: bytes already sent */
-} client_t;
+#include "networking.h"
 
 typedef struct {
     int port;

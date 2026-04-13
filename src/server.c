@@ -1,229 +1,17 @@
 #include "server.h"
-#include "command.h"
+#include "networking.h"
 #include "util.h"
-#include <arpa/inet.h>
-#include <errno.h>
 #include <signal.h>
 #include <stdint.h>
+#include <sys/socket.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
 #include <unistd.h>
+
 server_t server;
 
-static void on_write(event_loop_t *el, int fd);
-static void on_read(event_loop_t *el, int fd);
-static void on_shutdown(event_loop_t *el, int fd);
+/* --- housekeeping --- */
 
-static void process_buffer(event_loop_t *el, int fd);
-
-static void remove_client(event_loop_t *el, int fd) {
-  printf("client disconnected (fd=%d)\n", fd);
-  el_remove(el, fd);
-  close(fd);
-  server.clients[fd] = (client_t){0};
-  server.clients_count--;
-}
-
-static bool queue_write(event_loop_t *el, int fd, const char *data,
-                        size_t len) {
-  client_t *c = &server.clients[fd];
-
-  if (c->wlen + len > WBUF_SIZE && c->woff > 0) {
-    size_t pending = c->wlen - c->woff;
-    memmove(c->wbuf, c->wbuf + c->woff, pending);
-    c->wlen = pending;
-    c->woff = 0;
-  }
-
-  if (c->wlen + len > WBUF_SIZE)
-    return false;
-
-  bool buf_was_empty = (c->wlen == 0);
-
-  memcpy(c->wbuf + c->wlen, data, len);
-  c->wlen += len;
-
-  /* Fast path: try direct write if no prior data was pending */
-  if (buf_was_empty) {
-    ssize_t n = write(fd, c->wbuf + c->woff, c->wlen - c->woff);
-    if (n == -1) {
-      if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-        perror("write");
-        remove_client(el, fd);
-        return false;
-      }
-      /* EAGAIN/EINTR: write nothing, fall through to register handler */
-    } else {
-      c->woff += n;
-      if (c->woff == c->wlen) {
-        /* Everything sent — skip kqueue entirely */
-        c->woff = 0;
-        c->wlen = 0;
-        return true;
-      }
-    }
-  }
-
-  /* Slow path: data remains unsent, let the event loop drain it */
-  el_add_write(el, fd, on_write);
-  return true;
-}
-
-static bool send_framed(event_loop_t *el, int fd, const char *payload,
-                        uint32_t payload_len) {
-  char frame[FRAME_HDR_SIZE + MSG_MAX];
-  uint32_t net_len = htonl(payload_len);
-  memcpy(frame, &net_len, FRAME_HDR_SIZE);
-  memcpy(frame + FRAME_HDR_SIZE, payload, payload_len);
-  return queue_write(el, fd, frame, FRAME_HDR_SIZE + payload_len);
-}
-
-static void process_buffer(event_loop_t *el, int fd) {
-  client_t *c = &server.clients[fd];
-
-  while (c->len >= FRAME_HDR_SIZE) {
-    uint32_t net_len;
-    memcpy(&net_len, c->buf, FRAME_HDR_SIZE);
-    uint32_t payload_len = ntohl(net_len);
-
-    if (payload_len > MSG_MAX) {
-      remove_client(el, fd);
-      return;
-    }
-    if (c->len < FRAME_HDR_SIZE + payload_len)
-      return;
-
-    char resp[MSG_MAX];
-    char *payload = c->buf + FRAME_HDR_SIZE;
-    size_t rlen = command_execute(payload, payload_len, resp, sizeof(resp));
-    if (!send_framed(el, fd, resp, (uint32_t)rlen))
-      return;
-
-    size_t frame_size = FRAME_HDR_SIZE + payload_len;
-    memmove(c->buf, c->buf + frame_size, c->len - frame_size);
-    c->len -= frame_size;
-  }
-}
-
-static void on_write(event_loop_t *el, int fd) {
-  client_t *c = &server.clients[fd];
-
-  ssize_t n = write(fd, c->wbuf + c->woff, c->wlen - c->woff);
-  if (n == -1) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-      return;
-    perror("write");
-    remove_client(el, fd);
-    return;
-  }
-
-  c->woff += n;
-
-  if (c->woff == c->wlen) {
-    c->woff = 0;
-    c->wlen = 0;
-    el_remove_write(el, fd);
-
-    process_buffer(el, fd);
-  }
-}
-
-static void on_read(event_loop_t *el, int fd) {
-  client_t *c = &server.clients[fd];
-
-  if (!c->active)
-    return;
-
-  ssize_t n = read(fd, c->buf + c->len, sizeof(c->buf) - c->len);
-
-  if (n == 0) {
-    remove_client(el, fd);
-    return;
-  }
-  if (n == -1) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-      return;
-    perror("read");
-    remove_client(el, fd);
-    return;
-  }
-
-  c->len += n;
-  process_buffer(el, fd);
-}
-static void on_shutdown(event_loop_t *el, int fd) {
-  unsigned char buf[16];
-  for (;;) {
-    ssize_t n = read(fd, buf, sizeof(buf));
-    if (n <= 0)
-      break;
-    for (ssize_t i = 0; i < n; i++) {
-      switch (buf[i]) {
-      case SIGINT:
-        printf("Received SIGINT, shutting down...\n");
-        break;
-      case SIGTERM:
-        printf("Received SIGTERM, shutting down...\n");
-        break;
-      default:
-        printf("Received signal %d, shutting down...\n", buf[i]);
-        break;
-      }
-    }
-  }
-  el->stop = 1;
-}
-
-static void on_accept(event_loop_t *el, int server_fd) {
-  int fd = accept(server_fd, NULL, NULL);
-  if (fd == -1) {
-    if (errno != EAGAIN && errno != EWOULDBLOCK)
-      perror("accept");
-    return;
-  }
-  if (fd >= MAX_FDS) {
-    fprintf(stderr, "fd %d >= MAX_FDS, rejecting\n", fd);
-    close(fd);
-    return;
-  }
-  if (set_non_blocking(fd) == -1) {
-    close(fd);
-    return;
-  }
-
-  server.clients[fd] = (client_t){.active = true};
-  server.clients_count++;
-  printf("client connected (fd=%d)\n", fd);
-
-  if (el_add(el, fd, on_read) == -1) {
-    close(fd);
-    server.clients[fd] = (client_t){0};
-    server.clients_count--;
-  }
-}
-static volatile sig_atomic_t shutdown_signaled = 0;
-
-static void sigShutdownHandler(int sig) {
-  if (shutdown_signaled && sig == SIGINT) {
-    static const char msg[] = "FORCE SHUTDOWN\n";
-    write(STDERR_FILENO, msg, sizeof(msg) - 1);
-    _exit(1);
-  }
-  shutdown_signaled = 1;
-
-  unsigned char byte = (unsigned char)sig;
-  write(server.pipe[1], &byte, 1);
-}
-static void setupSignalHandlers(void) {
-  struct sigaction sig_act;
-  sigemptyset(&sig_act.sa_mask);
-  sig_act.sa_flags = 0;
-  sig_act.sa_handler = sigShutdownHandler;
-  sigaction(SIGINT, &sig_act, NULL);
-  sigaction(SIGTERM, &sig_act, NULL);
-}
 static void active_expire(void) {
   int64_t start = server.db->now_ms;
   int64_t current = start;
@@ -249,19 +37,71 @@ static void before_sleep(void) {
   }
 }
 
+/* --- signal handling --- */
+
+static volatile sig_atomic_t shutdown_signaled = 0;
+
+static void sig_shutdown_handler(int sig) {
+  if (shutdown_signaled && sig == SIGINT) {
+    static const char msg[] = "FORCE SHUTDOWN\n";
+    write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    _exit(1);
+  }
+  shutdown_signaled = 1;
+
+  unsigned char byte = (unsigned char)sig;
+  write(server.pipe[1], &byte, 1);
+}
+
+static void setup_signal_handlers(void) {
+  struct sigaction sig_act;
+  sigemptyset(&sig_act.sa_mask);
+  sig_act.sa_flags = 0;
+  sig_act.sa_handler = sig_shutdown_handler;
+  sigaction(SIGINT, &sig_act, NULL);
+  sigaction(SIGTERM, &sig_act, NULL);
+}
+
+static void on_shutdown(event_loop_t *el, int fd) {
+  unsigned char buf[16];
+  for (;;) {
+    ssize_t n = read(fd, buf, sizeof(buf));
+    if (n <= 0)
+      break;
+    for (ssize_t i = 0; i < n; i++) {
+      switch (buf[i]) {
+      case SIGINT:
+        printf("Received SIGINT, shutting down...\n");
+        break;
+      case SIGTERM:
+        printf("Received SIGTERM, shutting down...\n");
+        break;
+      default:
+        printf("Received signal %d, shutting down...\n", buf[i]);
+        break;
+      }
+    }
+  }
+  el->stop = 1;
+}
+
+/* --- lifecycle --- */
+
 static void init_server_config(void) {
   server.config.port = CONFIG_DEFAULT_PORT;
   server.config.tcp_backlog = CONFIG_DEFAULT_TCP_BACKLOG;
   server.config.hz = CONFIG_DEFAULT_HZ;
   server.config.active_expire_enabled = CONFIG_DEFAULT_ACTIVE_EXPIRE_ENABLED;
   server.config.active_expire_percent = CONFIG_DEFAULT_ACTIVE_EXPIRE_PERCENT;
-  server.config.active_expire_keys_per_round = CONFIG_DEFAULT_ACTIVE_EXPIRE_KEYS_PER_ROUND;
-  server.config.active_expire_budget_ms = CONFIG_DEFAULT_ACTIVE_EXPIRE_BUDGET_MS;
+  server.config.active_expire_keys_per_round =
+      CONFIG_DEFAULT_ACTIVE_EXPIRE_KEYS_PER_ROUND;
+  server.config.active_expire_budget_ms =
+      CONFIG_DEFAULT_ACTIVE_EXPIRE_BUDGET_MS;
 }
 
-int init_server(void) {
+static int init_server(void) {
   init_server_config();
-  setupSignalHandlers();
+  setup_signal_handlers();
 
   int server_fd =
       create_listener(server.config.port, server.config.tcp_backlog);
@@ -273,7 +113,8 @@ int init_server(void) {
     return EXIT_FAILURE;
   }
 
-  printf("[framing] listening on port %d\n", server.config.port);
+  printf("[bytekv] listening on port %d (hz=%d)\n", server.config.port,
+         server.config.hz);
 
   if (el_init(&server.el) == -1) {
     close(server_fd);
@@ -281,6 +122,7 @@ int init_server(void) {
   }
   server.el.before_sleep_proc = before_sleep;
   server.el.poll_timeout_ms = 1000 / server.config.hz;
+
   if (pipe(server.pipe) == -1) {
     perror("pipe");
     close(server_fd);
@@ -296,33 +138,22 @@ int init_server(void) {
   }
 
   server.server_fd = server_fd;
-  int pipe_rd = server.pipe[0];
-  if (el_add(&server.el, pipe_rd, on_shutdown) == -1) {
-    goto shutdown;
-  }
 
-  if (el_add(&server.el, server_fd, on_accept) == -1) {
-    goto shutdown;
-  }
+  if (el_add(&server.el, server.pipe[0], on_shutdown) == -1)
+    goto fail;
+
+  if (el_add(&server.el, server_fd, on_accept) == -1)
+    goto fail;
 
   return EXIT_SUCCESS;
 
-shutdown:
+fail:
   close(server_fd);
   el_cleanup(&server.el);
   return EXIT_FAILURE;
 }
 
-int server_main(void) {
-  server.db = db_create();
-
-  if (init_server() == EXIT_FAILURE) {
-    db_free(server.db);
-    return EXIT_FAILURE;
-  }
-
-  el_run(&server.el);
-
+static void shutdown_server(void) {
   for (int fd = 0; fd < MAX_FDS; fd++) {
     if (server.clients[fd].active) {
       shutdown(fd, SHUT_WR);
@@ -334,5 +165,17 @@ int server_main(void) {
   close(server.pipe[1]);
   el_cleanup(&server.el);
   db_free(server.db);
+}
+
+int server_main(void) {
+  server.db = db_create();
+
+  if (init_server() == EXIT_FAILURE) {
+    db_free(server.db);
+    return EXIT_FAILURE;
+  }
+
+  el_run(&server.el);
+  shutdown_server();
   return EXIT_SUCCESS;
 }

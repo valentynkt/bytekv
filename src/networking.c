@@ -1,0 +1,178 @@
+#include "networking.h"
+#include "command.h"
+#include "server.h"
+#include "util.h"
+#include <arpa/inet.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+static void on_write(event_loop_t *el, int fd);
+static void on_read(event_loop_t *el, int fd);
+static void process_buffer(event_loop_t *el, int fd);
+
+static void remove_client(event_loop_t *el, int fd) {
+  printf("client disconnected (fd=%d)\n", fd);
+  el_remove(el, fd);
+  close(fd);
+  server.clients[fd] = (client_t){0};
+  server.clients_count--;
+}
+
+static bool queue_write(event_loop_t *el, int fd, const char *data,
+                        size_t len) {
+  client_t *c = &server.clients[fd];
+
+  if (c->wlen + len > WBUF_SIZE && c->woff > 0) {
+    size_t pending = c->wlen - c->woff;
+    memmove(c->wbuf, c->wbuf + c->woff, pending);
+    c->wlen = pending;
+    c->woff = 0;
+  }
+
+  if (c->wlen + len > WBUF_SIZE)
+    return false;
+
+  bool buf_was_empty = (c->wlen == 0);
+
+  memcpy(c->wbuf + c->wlen, data, len);
+  c->wlen += len;
+
+  /* Fast path: try direct write if no prior data was pending */
+  if (buf_was_empty) {
+    ssize_t n = write(fd, c->wbuf + c->woff, c->wlen - c->woff);
+    if (n == -1) {
+      if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+        perror("write");
+        remove_client(el, fd);
+        return false;
+      }
+      /* EAGAIN/EINTR: write nothing, fall through to register handler */
+    } else {
+      c->woff += n;
+      if (c->woff == c->wlen) {
+        /* Everything sent — skip kqueue entirely */
+        c->woff = 0;
+        c->wlen = 0;
+        return true;
+      }
+    }
+  }
+
+  /* Slow path: data remains unsent, let the event loop drain it */
+  el_add_write(el, fd, on_write);
+  return true;
+}
+
+static bool send_framed(event_loop_t *el, int fd, const char *payload,
+                        uint32_t payload_len) {
+  char frame[FRAME_HDR_SIZE + MSG_MAX];
+  uint32_t net_len = htonl(payload_len);
+  memcpy(frame, &net_len, FRAME_HDR_SIZE);
+  memcpy(frame + FRAME_HDR_SIZE, payload, payload_len);
+  return queue_write(el, fd, frame, FRAME_HDR_SIZE + payload_len);
+}
+
+static void process_buffer(event_loop_t *el, int fd) {
+  client_t *c = &server.clients[fd];
+
+  while (c->len >= FRAME_HDR_SIZE) {
+    uint32_t net_len;
+    memcpy(&net_len, c->buf, FRAME_HDR_SIZE);
+    uint32_t payload_len = ntohl(net_len);
+
+    if (payload_len > MSG_MAX) {
+      remove_client(el, fd);
+      return;
+    }
+    if (c->len < FRAME_HDR_SIZE + payload_len)
+      return;
+
+    char resp[MSG_MAX];
+    char *payload = c->buf + FRAME_HDR_SIZE;
+    size_t rlen = command_execute(payload, payload_len, resp, sizeof(resp));
+    if (!send_framed(el, fd, resp, (uint32_t)rlen))
+      return;
+
+    size_t frame_size = FRAME_HDR_SIZE + payload_len;
+    memmove(c->buf, c->buf + frame_size, c->len - frame_size);
+    c->len -= frame_size;
+  }
+}
+
+static void on_write(event_loop_t *el, int fd) {
+  client_t *c = &server.clients[fd];
+
+  ssize_t n = write(fd, c->wbuf + c->woff, c->wlen - c->woff);
+  if (n == -1) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+      return;
+    perror("write");
+    remove_client(el, fd);
+    return;
+  }
+
+  c->woff += n;
+
+  if (c->woff == c->wlen) {
+    c->woff = 0;
+    c->wlen = 0;
+    el_remove_write(el, fd);
+
+    process_buffer(el, fd);
+  }
+}
+
+static void on_read(event_loop_t *el, int fd) {
+  client_t *c = &server.clients[fd];
+
+  if (!c->active)
+    return;
+
+  ssize_t n = read(fd, c->buf + c->len, sizeof(c->buf) - c->len);
+
+  if (n == 0) {
+    remove_client(el, fd);
+    return;
+  }
+  if (n == -1) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+      return;
+    perror("read");
+    remove_client(el, fd);
+    return;
+  }
+
+  c->len += n;
+  process_buffer(el, fd);
+}
+
+void on_accept(event_loop_t *el, int server_fd) {
+  int fd = accept(server_fd, NULL, NULL);
+  if (fd == -1) {
+    if (errno != EAGAIN && errno != EWOULDBLOCK)
+      perror("accept");
+    return;
+  }
+  if (fd >= MAX_FDS) {
+    fprintf(stderr, "fd %d >= MAX_FDS, rejecting\n", fd);
+    close(fd);
+    return;
+  }
+  if (set_non_blocking(fd) == -1) {
+    close(fd);
+    return;
+  }
+
+  server.clients[fd] = (client_t){.active = true};
+  server.clients_count++;
+  printf("client connected (fd=%d)\n", fd);
+
+  if (el_add(el, fd, on_read) == -1) {
+    close(fd);
+    server.clients[fd] = (client_t){0};
+    server.clients_count--;
+  }
+}

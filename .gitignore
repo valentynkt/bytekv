@@ -2,3 +2,4 @@ build/
 bytekv
 bytekv_*
 *.dSYM/
+/docs

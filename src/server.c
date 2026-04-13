@@ -290,10 +290,12 @@ shutdown:
 }
 
 int run_networking(void) {
+  server.db = db_create();
   command_init();
 
   if (init_server() == EXIT_FAILURE) {
     command_shutdown();
+    db_free(server.db);
     return EXIT_FAILURE;
   }
 
@@ -310,5 +312,6 @@ int run_networking(void) {
   close(server.pipe[1]);
   el_cleanup(&server.el);
   command_shutdown();
+  db_free(server.db);
   return EXIT_SUCCESS;
 }

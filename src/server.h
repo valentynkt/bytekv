@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "db.h"
 #include "event_loop.h"
 #define MAX_CLIENTS_FD 1024
 #define MSG_MAX 4096
@@ -26,7 +27,10 @@ typedef struct {
     size_t clients_count;
     int pipe[2];
     bool active_expire;
+    db_t *db;
 } server_t;
+
+extern server_t server;
 
 int run_networking(void);
 

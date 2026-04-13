@@ -1,5 +1,5 @@
 #include "command.h"
-#include "db.h"
+#include "server.h"
 #include "util.h"
 #include <inttypes.h>
 #include <stdarg.h>
@@ -34,10 +34,6 @@ typedef struct {
   cmd_proc_t *proc;
   int arity;
 } command_entry_t;
-
-/* state */
-
-static db_t *db = NULL;
 
 /* response helpers */
 
@@ -82,7 +78,7 @@ static bool parse_seconds(const char *s, int64_t *out) {
 static void cmd_get(command_ctx_t *ctx) {
   const char *key = ctx->argv[1];
 
-  char *val = db_get(db, key);
+  char *val = db_get(server.db, key);
   if (val == NULL) {
     resp_add(&ctx->resp, "-ERR key not found\n");
     return;
@@ -93,7 +89,7 @@ static void cmd_get(command_ctx_t *ctx) {
 static void cmd_ttl(command_ctx_t *ctx) {
   const char *key = ctx->argv[1];
 
-  int64_t ttl = db_get_ttl(db, key);
+  int64_t ttl = db_get_ttl(server.db, key);
   if (ttl == -2) {
     resp_add(&ctx->resp, "-ERR key not found\n");
     return;
@@ -109,7 +105,7 @@ static void cmd_set(command_ctx_t *ctx) {
   const char *key = ctx->argv[1];
   const char *value = ctx->argv[2];
 
-  if (db_set(db, key, value) == EXIT_FAILURE)
+  if (db_set(server.db, key, value) == EXIT_FAILURE)
     resp_add(&ctx->resp, "-ERR SET COMMAND\n");
   else
     resp_add(&ctx->resp, "+OK\n");
@@ -125,8 +121,8 @@ static void cmd_setex(command_ctx_t *ctx) {
     resp_add(&ctx->resp, "-ERR invalid expire time\n");
     return;
   }
-  int64_t expire_at = db->now_ms + (seconds * 1000);
-  if (db_setex(db, key, value, expire_at) == EXIT_FAILURE)
+  int64_t expire_at = server.db->now_ms + (seconds * 1000);
+  if (db_setex(server.db, key, value, expire_at) == EXIT_FAILURE)
     resp_add(&ctx->resp, "-ERR SETEX COMMAND\n");
   else
     resp_add(&ctx->resp, "+OK\n");
@@ -141,8 +137,8 @@ static void cmd_expire(command_ctx_t *ctx) {
     resp_add(&ctx->resp, "-ERR invalid expire time\n");
     return;
   }
-  int64_t expire_at = db->now_ms + (seconds * 1000);
-  if (db_key_expire(db, key, expire_at) == EXIT_FAILURE)
+  int64_t expire_at = server.db->now_ms + (seconds * 1000);
+  if (db_key_expire(server.db, key, expire_at) == EXIT_FAILURE)
     resp_add(&ctx->resp, "-ERR EXPIRE COMMAND\n");
   else
     resp_add(&ctx->resp, "+OK\n");
@@ -151,7 +147,7 @@ static void cmd_expire(command_ctx_t *ctx) {
 static void cmd_persist(command_ctx_t *ctx) {
   const char *key = ctx->argv[1];
 
-  if (db_persist(db, key) == EXIT_FAILURE)
+  if (db_persist(server.db, key) == EXIT_FAILURE)
     resp_add(&ctx->resp, "-ERR PERSIST COMMAND\n");
   else
     resp_add(&ctx->resp, "+OK\n");
@@ -160,14 +156,14 @@ static void cmd_persist(command_ctx_t *ctx) {
 static void cmd_del(command_ctx_t *ctx) {
   const char *key = ctx->argv[1];
 
-  if (db_del(db, key) == EXIT_FAILURE)
+  if (db_del(server.db, key) == EXIT_FAILURE)
     resp_add(&ctx->resp, "-ERR DEL COMMAND\n");
   else
     resp_add(&ctx->resp, "+OK\n");
 }
 
 static void cmd_keys(command_ctx_t *ctx) {
-  ht_iter_t *iter = ht_iter_create(db->keyspace);
+  ht_iter_t *iter = ht_iter_create(server.db->keyspace);
   ht_entry_t *entry;
   int count = 0;
   while ((entry = ht_iter_next(iter)) != NULL) {
@@ -178,12 +174,12 @@ static void cmd_keys(command_ctx_t *ctx) {
 }
 
 static void cmd_info(command_ctx_t *ctx) {
-  int64_t uptime_s = (db->now_ms - db->start_ms) / 1000;
+  int64_t uptime_s = (server.db->now_ms - server.db->start_ms) / 1000;
   resp_addf(&ctx->resp,
             "Uptime: %" PRId64 " seconds\n"
             "DB Size: %zu\n"
             "DB Keys Used: %zu\n",
-            uptime_s, db->keyspace->size, db->keyspace->used);
+            uptime_s, server.db->keyspace->size, server.db->keyspace->used);
 }
 
 /* command table */
@@ -229,11 +225,11 @@ static int tokenize_command(char *cmd, char **argv, int max_tokens) {
 
 void active_expire(void) {
   printf("[LOG] Active Expiry Started\n");
-  db->now_ms = now_ms();
-  int64_t start = db->now_ms;
+  server.db->now_ms = now_ms();
+  int64_t start = server.db->now_ms;
   int64_t current = start;
   while (current - start < ACTIVE_EXPIRE_MS_TIMEOUT) {
-    size_t expired = db_active_sweep(db, ACTIVE_EXPIRE_NUM_ITEMS);
+    size_t expired = db_active_sweep(server.db, ACTIVE_EXPIRE_NUM_ITEMS);
     bool is_below_treshold =
         expired * 100 / ACTIVE_EXPIRE_NUM_ITEMS < ACTIVE_EXPIRE_TRESHOLD_PERS;
     if (is_below_treshold) {
@@ -243,18 +239,13 @@ void active_expire(void) {
   }
 }
 
-void command_init(void) { db = db_create(); }
+void command_init(void) {}
 
-void command_shutdown(void) {
-  if (db != NULL) {
-    db_free(db);
-    db = NULL;
-  }
-}
+void command_shutdown(void) {}
 
 size_t command_execute(const char *payload, size_t len, char *out,
                        size_t out_cap) {
-  db->now_ms = now_ms();
+  server.db->now_ms = now_ms();
 
   char cmd[MSG_MAX + 1];
   memcpy(cmd, payload, len);

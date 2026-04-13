@@ -15,7 +15,6 @@ typedef struct {
     bool active_expire_enabled;
     int active_expire_percent;
     int active_expire_keys_per_round;
-    int active_expire_budget_ms;
 } server_config_t;
 
 typedef struct {

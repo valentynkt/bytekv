@@ -16,7 +16,8 @@ static void active_expire(void) {
   int64_t start = server.db->now_ms;
   int64_t current = start;
   server_config_t *cfg = &server.config;
-  while (current - start < cfg->active_expire_budget_ms) {
+  int budget_ms = (1000 / cfg->hz) / 4;
+  while (current - start < budget_ms) {
     size_t expired =
         db_active_sweep(server.db, cfg->active_expire_keys_per_round);
     bool below_threshold =
@@ -95,8 +96,6 @@ static void init_server_config(void) {
   server.config.active_expire_percent = CONFIG_DEFAULT_ACTIVE_EXPIRE_PERCENT;
   server.config.active_expire_keys_per_round =
       CONFIG_DEFAULT_ACTIVE_EXPIRE_KEYS_PER_ROUND;
-  server.config.active_expire_budget_ms =
-      CONFIG_DEFAULT_ACTIVE_EXPIRE_BUDGET_MS;
 }
 
 static int init_server(void) {

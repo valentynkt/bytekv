@@ -12,6 +12,7 @@ struct event_loop {
   el_handler_fn read_handlers[MAX_FDS];
   el_handler_fn write_handlers[MAX_FDS];
   el_before_sleep_fn *before_sleep_proc;
+  int poll_timeout_ms;
   bool stop;
 };
 

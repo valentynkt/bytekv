@@ -187,8 +187,8 @@ static void on_accept(event_loop_t *el, int server_fd) {
       perror("accept");
     return;
   }
-  if (fd >= MAX_CLIENTS_FD) {
-    fprintf(stderr, "fd %d >= MAX_CLIENTS_FD, rejecting\n", fd);
+  if (fd >= MAX_FDS) {
+    fprintf(stderr, "fd %d >= MAX_FDS, rejecting\n", fd);
     close(fd);
     return;
   }
@@ -242,7 +242,7 @@ static void active_expire(void) {
   }
 }
 
-void before_sleep(void) {
+static void before_sleep(void) {
   server.db->now_ms = now_ms();
 
   if (server.active_expire) {
@@ -256,6 +256,7 @@ static void init_server_config(void) {
   server.config.active_expire_threshold = CONFIG_DEFAULT_ACTIVE_EXPIRE_THRESHOLD;
   server.config.active_expire_samples = CONFIG_DEFAULT_ACTIVE_EXPIRE_SAMPLES;
   server.config.active_expire_timeout_ms = CONFIG_DEFAULT_ACTIVE_EXPIRE_TIMEOUT_MS;
+  server.config.el_poll_timeout_ms = CONFIG_DEFAULT_EL_POLL_TIMEOUT_MS;
 }
 
 int init_server(void) {
@@ -279,6 +280,7 @@ int init_server(void) {
     return EXIT_FAILURE;
   }
   server.el.before_sleep_proc = before_sleep;
+  server.el.poll_timeout_ms = server.config.el_poll_timeout_ms;
   server.active_expire = true;
   if (pipe(server.pipe) == -1) {
     perror("pipe");
@@ -322,7 +324,7 @@ int run_networking(void) {
 
   el_run(&server.el);
 
-  for (int fd = 0; fd < MAX_CLIENTS_FD; fd++) {
+  for (int fd = 0; fd < MAX_FDS; fd++) {
     if (server.clients[fd].active) {
       shutdown(fd, SHUT_WR);
       close(fd);

@@ -76,13 +76,10 @@ int el_run(event_loop_t *el) {
 
   while (!el->stop) {
     el->before_sleep_proc();
-    // We need to add the timeout here. Which and how? Currently we have it
-    // hardcoded, but maybe we should have some server tick rates, or any like
-    // that, so we could strike in exact ticks moment when we now there are a
-    // gap of processing, like mini application layer scheduler.
+
     struct timespec timeout;
-    timeout.tv_sec = 5;
-    timeout.tv_nsec = 10;
+    timeout.tv_sec = el->poll_timeout_ms / 1000;
+    timeout.tv_nsec = (el->poll_timeout_ms % 1000) * 1000000L;
 
     int n = kevent(el->kq, NULL, 0, events, MAX_EVENTS, &timeout);
     if (n == -1) {

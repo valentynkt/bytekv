@@ -22,13 +22,14 @@ typedef struct {
     int active_expire_threshold;
     int active_expire_samples;
     int active_expire_timeout_ms;
+    int el_poll_timeout_ms;
 } server_config_t;
 
 typedef struct {
     server_config_t config;
     int server_fd;
     event_loop_t el;
-    client_t clients[MAX_CLIENTS_FD];
+    client_t clients[MAX_FDS];
     size_t clients_count;
     int pipe[2];
     bool active_expire;

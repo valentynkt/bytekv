@@ -1,6 +1,5 @@
 #include "command.h"
 #include "server.h"
-#include "util.h"
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -221,8 +220,6 @@ static int tokenize_command(char *cmd, char **argv, int max_tokens) {
 
 size_t command_execute(const char *payload, size_t len, char *out,
                        size_t out_cap) {
-  server.db->now_ms = now_ms();
-
   char cmd[MSG_MAX + 1];
   memcpy(cmd, payload, len);
   cmd[len] = '\0';

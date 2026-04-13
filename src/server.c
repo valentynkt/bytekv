@@ -3,6 +3,7 @@
 #include "event_loop.h"
 #include "util.h"
 #include <arpa/inet.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -228,7 +229,6 @@ static void setupSignalHandlers(void) {
   sigaction(SIGTERM, &sig_act, NULL);
 }
 static void active_expire(void) {
-  server.db->now_ms = now_ms();
   int64_t start = server.db->now_ms;
   int64_t current = start;
   server_config_t *cfg = &server.config;
@@ -243,6 +243,8 @@ static void active_expire(void) {
 }
 
 void before_sleep(void) {
+  server.db->now_ms = now_ms();
+
   if (server.active_expire) {
     active_expire();
   }

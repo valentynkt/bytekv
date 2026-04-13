@@ -2,7 +2,6 @@
 #define SERVER_H
 
 #include <stdbool.h>
-#include <string.h>
 
 #include "config.h"
 #include "db.h"

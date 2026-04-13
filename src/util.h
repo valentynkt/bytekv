@@ -1,16 +1,9 @@
 #ifndef UTIL_H
 #define UTIL_H
 
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <sys/types.h>
 
 
 typedef size_t ustime_t; /* microsecond time type. */

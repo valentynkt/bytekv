@@ -11,35 +11,10 @@
 #include <unistd.h>
 
 #define MAX_EVENTS 64
-#define ACTIVE_EXPIRE_TRESHOLD_PERS 25
-#define ACTIVE_EXPIRE_NUM_ITEMS 10
-#define ACTIVE_EXPIRE_MS_TIMEOUT 5000
-void active_expire(event_loop_t *el) {
-  // I have to budget my time, have some confid in milliseconds of how much
-  // active expire should be limited to, also have the config for number of
-  // items to pick (20?) and treshold 25%?
-  printf("[LOG] Active Expiry Started\n");
-  int64_t start = now_ms();
-  int64_t current = start;
-  while (current - start < ACTIVE_EXPIRE_MS_TIMEOUT) {
-    current = now_ms();
-  }
-}
-void before_sleep(event_loop_t *el) {
-  // active expiry
-  printf("[LOG] Before Sleep Started\n. kq: %d", el->kq);
 
-  if (el->active_expire) {
-    active_expire(el);
-  }
-  // AOF flushing
-}
 int el_init(event_loop_t *el) {
   memset(el->read_handlers, 0, sizeof(el->read_handlers));
   memset(el->write_handlers, 0, sizeof(el->write_handlers));
-  el->before_sleep_proc = before_sleep;
-  el->active_expire = true;
-
   el->kq = kqueue();
   if (el->kq == -1)
     return -1;
@@ -101,7 +76,7 @@ int el_run(event_loop_t *el) {
   struct kevent events[MAX_EVENTS];
 
   while (!el->stop) {
-    el->before_sleep_proc(el);
+    el->before_sleep_proc();
     // We need to add the timeout here. Which and how? Currently we have it
     // hardcoded, but maybe we should have some server tick rates, or any like
     // that, so we could strike in exact ticks moment when we now there are a

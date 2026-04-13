@@ -227,6 +227,15 @@ static void setupSignalHandlers(void) {
   sigaction(SIGINT, &sig_act, NULL);
   sigaction(SIGTERM, &sig_act, NULL);
 }
+void before_sleep(void) {
+  // active expiry
+  printf("[LOG] Before Sleep Started\n. kq: %d", server.el.kq);
+
+  if (server.active_expire) {
+    active_expire();
+  }
+  // AOF flushing
+}
 
 int init_server(void) {
   setupSignalHandlers();
@@ -246,6 +255,8 @@ int init_server(void) {
     close(server_fd);
     return EXIT_FAILURE;
   }
+  server.el.before_sleep_proc = before_sleep;
+  server.active_expire = true;
   if (pipe(server.pipe) == -1) {
     perror("pipe");
     close(server_fd);

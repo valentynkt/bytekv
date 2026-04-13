@@ -25,6 +25,7 @@ typedef struct {
     client_t clients[MAX_CLIENTS_FD];
     size_t clients_count;
     int pipe[2];
+    bool active_expire;
 } server_t;
 
 int run_networking(void);

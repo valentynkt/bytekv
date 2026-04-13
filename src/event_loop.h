@@ -5,7 +5,7 @@
 
 typedef struct event_loop event_loop_t;
 typedef void (*el_handler_fn)(event_loop_t *el, int fd);
-typedef void el_before_sleep_fn(struct event_loop *event_loop);
+typedef void el_before_sleep_fn(void);
 
 struct event_loop {
   int kq;
@@ -13,7 +13,6 @@ struct event_loop {
   el_handler_fn write_handlers[MAX_FDS];
   el_before_sleep_fn *before_sleep_proc;
   bool stop;
-  bool active_expire;
 };
 
 int el_init(event_loop_t *el);

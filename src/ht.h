@@ -1,5 +1,6 @@
 #ifndef HT_H
 #define HT_H
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -38,6 +39,7 @@ int ht_set_i64(ht_t *ht, const char *key, int64_t value);
 char *ht_get_str(ht_t *ht, const char *key);
 int64_t *ht_get_i64(ht_t *ht, const char *key);
 
+bool ht_exists(ht_t *ht, const char *key);
 int ht_del(ht_t *ht, const char *key);
 int ht_free(ht_t *ht);
 int ht_resize(ht_t *ht, size_t new_size);

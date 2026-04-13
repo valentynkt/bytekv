@@ -21,40 +21,12 @@ void db_free(db_t *db) {
   free(db);
 }
 
-int db_set(db_t *db, const char *key, const char *value) {
-  return ht_set_str(db->keyspace, key, value);
+int db_del(db_t *db, const char *key) {
+  ht_del(db->expires, key);
+  return ht_del(db->keyspace, key);
 }
 
-int db_setex(db_t *db, const char *key, const char *value, int64_t expire_at) {
-  if (ht_set_str(db->keyspace, key, value) == EXIT_FAILURE)
-    return EXIT_FAILURE;
-  if (expire_at > 0)
-    ht_set_i64(db->expires, key, expire_at);
-  return EXIT_SUCCESS;
-}
-// ToDo: Probably need better handling, currently returns the same error for the
-// key that does not exist at all in expires table, the key that was already
-// expired? and the the key that is not expired but error happend so need retry.
-int db_persist(db_t *db, const char *key) { return ht_del(db->expires, key); }
-
-int db_key_expire(db_t *db, const char *key, int64_t expire_at) {
-  if (expire_at <= 0 || ht_get_str(db->keyspace, key) == NULL)
-    return EXIT_FAILURE;
-  return ht_set_i64(db->expires, key, expire_at);
-}
-// Errors: -1 : No TTL, -2 : Key don't exist
-int64_t db_get_ttl(db_t *db, const char *key) {
-  if (db_get(db, key) == NULL) {
-    return -2;
-  }
-  int64_t *expire_at = ht_get_i64(db->expires, key);
-  if (expire_at == NULL) {
-    return -1;
-  }
-  return (*expire_at - db->now_ms) / 1000;
-}
-static bool *db_expire_clean(db_t *db, const char *key) {
-
+static bool db_expire_clean(db_t *db, const char *key) {
   int64_t *expire_at = ht_get_i64(db->expires, key);
   if (expire_at && db->now_ms > *expire_at) {
     db_del(db, key);
@@ -63,17 +35,50 @@ static bool *db_expire_clean(db_t *db, const char *key) {
   return false;
 }
 
+// Lazy expiration: clean expired key on access
 char *db_get(db_t *db, const char *key) {
-  if (db_expire_clean(db, key)) {
+  if (db_expire_clean(db, key))
     return NULL;
-  }
-  // Lazy expirations
   return ht_get_str(db->keyspace, key);
 }
 
-int db_del(db_t *db, const char *key) {
-  ht_del(db->expires, key);
-  return ht_del(db->keyspace, key);
+int db_set(db_t *db, const char *key, const char *value) {
+  return ht_set_str(db->keyspace, key, value);
+}
+
+int db_setex(db_t *db, const char *key, const char *value, int64_t expire_at) {
+  if (ht_set_str(db->keyspace, key, value) == EXIT_FAILURE)
+    return EXIT_FAILURE;
+  if (expire_at > 0) {
+    if (ht_set_i64(db->expires, key, expire_at) == EXIT_FAILURE) {
+      ht_del(db->keyspace, key);
+      return EXIT_FAILURE;
+    }
+  }
+  return EXIT_SUCCESS;
+}
+
+// ToDo: Probably need better handling, currently returns the same error for the
+// key that does not exist at all in expires table, the key that was already
+// expired? and the the key that is not expired but error happend so need retry.
+int db_persist(db_t *db, const char *key) { return ht_del(db->expires, key); }
+
+int db_key_expire(db_t *db, const char *key, int64_t expire_at) {
+  if (expire_at <= 0 || !ht_exists(db->keyspace, key))
+    return EXIT_FAILURE;
+  return ht_set_i64(db->expires, key, expire_at);
+}
+
+// Errors: -1 : No TTL, -2 : Key don't exist
+int64_t db_get_ttl(db_t *db, const char *key) {
+  db_expire_clean(db, key);
+  if (!ht_exists(db->keyspace, key))
+    return -2;
+  int64_t *expire_at = ht_get_i64(db->expires, key);
+  if (expire_at == NULL) {
+    return -1;
+  }
+  return (*expire_at - db->now_ms) / 1000;
 }
 
 size_t db_active_sweep(db_t *db, size_t sample_size) {
@@ -94,14 +99,11 @@ size_t db_active_sweep(db_t *db, size_t sample_size) {
   }
 
   size_t keys_cleaned = 0;
-  for (size_t i = 0; i < sample_size; i++) {
+  for (size_t i = 0; i < picked; i++) {
     ht_entry_t *e = ht_get_bucket(db->expires, picks[i]);
     while (e) {
       ht_entry_t *next = e->next;
-      bool is_cleaned = db_expire_clean(db, e->key);
-      if (is_cleaned) {
-        keys_cleaned++;
-      }
+      keys_cleaned += db_expire_clean(db, e->key);
       e = next;
     }
   }

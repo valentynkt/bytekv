@@ -101,6 +101,8 @@ static ht_entry_t *ht_find(ht_t *ht, const char *key) {
   return NULL;
 }
 
+bool ht_exists(ht_t *ht, const char *key) { return ht_find(ht, key) != NULL; }
+
 char *ht_get_str(ht_t *ht, const char *key) {
   assert(ht->val_type == HT_VAL_STR);
   ht_entry_t *entry = ht_find(ht, key);

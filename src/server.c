@@ -20,7 +20,7 @@ static void active_expire(void) {
   int budget_ms = (1000 / cfg->hz) / 4;
   while (current - start < budget_ms) {
     size_t expired =
-        db_active_sweep(server.db, cfg->active_expire_keys_per_round);
+        db_active_sweep(server.db, cfg->active_expire_keys_per_round, server.now_ms);
     bool below_threshold = expired * 100 / cfg->active_expire_keys_per_round <
                            (size_t)cfg->active_expire_percent;
     if (below_threshold)
@@ -170,7 +170,8 @@ static void shutdown_server(void) {
 }
 
 int server_main(void) {
-  server.db = db_create();
+  server.now_ms = now_ms();
+  server.db = db_create(server.now_ms);
 
   if (init_server() == EXIT_FAILURE) {
     db_free(server.db);

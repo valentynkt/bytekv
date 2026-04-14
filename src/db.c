@@ -1,16 +1,15 @@
 #include "db.h"
 #include "ht.h"
-#include "server.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 
-db_t *db_create(void) {
+db_t *db_create(int64_t now_ms) {
   db_t *db = malloc(sizeof(*db));
   db->keyspace = ht_create(HT_VAL_STR);
   db->expires = ht_create(HT_VAL_I64);
-  db->start_ms = server.now_ms;
+  db->start_ms = now_ms;
   return db;
 }
 
@@ -25,9 +24,9 @@ int db_del(db_t *db, const char *key) {
   return ht_del(db->keyspace, key);
 }
 
-static bool db_expire_clean(db_t *db, const char *key) {
+static bool db_expire_clean(db_t *db, const char *key, int64_t now_ms) {
   int64_t *expire_at = ht_get_i64(db->expires, key);
-  if (expire_at && server.now_ms > *expire_at) {
+  if (expire_at && now_ms > *expire_at) {
     db_del(db, key);
     return true;
   }
@@ -35,8 +34,8 @@ static bool db_expire_clean(db_t *db, const char *key) {
 }
 
 // Lazy expiration: clean expired key on access
-char *db_get(db_t *db, const char *key) {
-  if (db_expire_clean(db, key))
+char *db_get(db_t *db, const char *key, int64_t now_ms) {
+  if (db_expire_clean(db, key, now_ms))
     return NULL;
   return ht_get_str(db->keyspace, key);
 }
@@ -69,18 +68,18 @@ int db_key_expire(db_t *db, const char *key, int64_t expire_at) {
 }
 
 // Errors: -1 : No TTL, -2 : Key don't exist
-int64_t db_get_ttl(db_t *db, const char *key) {
-  db_expire_clean(db, key);
+int64_t db_get_ttl(db_t *db, const char *key, int64_t now_ms) {
+  db_expire_clean(db, key, now_ms);
   if (!ht_exists(db->keyspace, key))
     return -2;
   int64_t *expire_at = ht_get_i64(db->expires, key);
   if (expire_at == NULL) {
     return -1;
   }
-  return (*expire_at - server.now_ms) / 1000;
+  return (*expire_at - now_ms) / 1000;
 }
 
-size_t db_active_sweep(db_t *db, size_t sample_size) {
+size_t db_active_sweep(db_t *db, size_t sample_size, int64_t now_ms) {
   if (db->expires->used == 0)
     return 0;
 
@@ -102,7 +101,7 @@ size_t db_active_sweep(db_t *db, size_t sample_size) {
     ht_entry_t *e = ht_get_bucket(db->expires, picks[i]);
     while (e) {
       ht_entry_t *next = e->next;
-      keys_cleaned += db_expire_clean(db, e->key);
+      keys_cleaned += db_expire_clean(db, e->key, now_ms);
       e = next;
     }
   }

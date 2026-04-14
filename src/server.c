@@ -1,11 +1,12 @@
 #include "server.h"
+#include "config.h"
 #include "networking.h"
 #include "util.h"
 #include <signal.h>
 #include <stdint.h>
-#include <sys/socket.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 server_t server;
@@ -13,16 +14,15 @@ server_t server;
 /* --- housekeeping --- */
 
 static void active_expire(void) {
-  int64_t start = server.db->now_ms;
+  int64_t start = server.now_ms;
   int64_t current = start;
   server_config_t *cfg = &server.config;
   int budget_ms = (1000 / cfg->hz) / 4;
   while (current - start < budget_ms) {
     size_t expired =
         db_active_sweep(server.db, cfg->active_expire_keys_per_round);
-    bool below_threshold =
-        expired * 100 / cfg->active_expire_keys_per_round <
-        (size_t)cfg->active_expire_percent;
+    bool below_threshold = expired * 100 / cfg->active_expire_keys_per_round <
+                           (size_t)cfg->active_expire_percent;
     if (below_threshold)
       break;
     current = now_ms();
@@ -30,11 +30,14 @@ static void active_expire(void) {
 }
 
 static void before_sleep(void) {
-  server.db->now_ms = now_ms();
+  server.now_ms = now_ms();
   server.cronloops++;
 
   if (server.config.active_expire_enabled) {
     active_expire();
+  }
+  if (server.cronloops % CONFIG_DEFAULT_CLIENT_TIMEOUT_CHECK_HZ == 0) {
+    check_client_timeouts(&server.el);
   }
 }
 

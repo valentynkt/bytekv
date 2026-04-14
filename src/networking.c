@@ -1,5 +1,7 @@
 #include "networking.h"
 #include "command.h"
+#include "config.h"
+#include "event_loop.h"
 #include "server.h"
 #include "util.h"
 #include <arpa/inet.h>
@@ -145,6 +147,7 @@ static void on_read(event_loop_t *el, int fd) {
     return;
   }
 
+  c->last_active_ms = server.now_ms;
   c->len += n;
   process_buffer(el, fd);
 }
@@ -166,7 +169,8 @@ void on_accept(event_loop_t *el, int server_fd) {
     return;
   }
 
-  server.clients[fd] = (client_t){.active = true};
+  server.clients[fd] =
+      (client_t){.active = true, .last_active_ms = server.now_ms};
   server.clients_count++;
   printf("client connected (fd=%d)\n", fd);
 
@@ -174,5 +178,18 @@ void on_accept(event_loop_t *el, int server_fd) {
     close(fd);
     server.clients[fd] = (client_t){0};
     server.clients_count--;
+  }
+}
+void check_client_timeouts(event_loop_t *el) {
+  for (int i = 0; i < MAX_FDS; i++) {
+    if (!server.clients[i].active) {
+      continue;
+    }
+    int64_t idle_s =
+        (server.now_ms - server.clients[i].last_active_ms) / 1000;
+    if (idle_s >= CONFIG_DEFAULT_CLIENT_TIMEOUT_S) {
+      printf("client timed out (fd=%d, idle=%llds)\n", i, (long long)idle_s);
+      remove_client(el, i);
+    }
   }
 }

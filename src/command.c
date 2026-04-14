@@ -120,7 +120,7 @@ static void cmd_setex(command_ctx_t *ctx) {
     resp_add(&ctx->resp, "-ERR invalid expire time\n");
     return;
   }
-  int64_t expire_at = server.db->now_ms + (seconds * 1000);
+  int64_t expire_at = server.now_ms + (seconds * 1000);
   if (db_setex(server.db, key, value, expire_at) == EXIT_FAILURE)
     resp_add(&ctx->resp, "-ERR SETEX COMMAND\n");
   else
@@ -136,7 +136,7 @@ static void cmd_expire(command_ctx_t *ctx) {
     resp_add(&ctx->resp, "-ERR invalid expire time\n");
     return;
   }
-  int64_t expire_at = server.db->now_ms + (seconds * 1000);
+  int64_t expire_at = server.now_ms + (seconds * 1000);
   if (db_key_expire(server.db, key, expire_at) == EXIT_FAILURE)
     resp_add(&ctx->resp, "-ERR EXPIRE COMMAND\n");
   else
@@ -173,7 +173,7 @@ static void cmd_keys(command_ctx_t *ctx) {
 }
 
 static void cmd_info(command_ctx_t *ctx) {
-  int64_t uptime_s = (server.db->now_ms - server.db->start_ms) / 1000;
+  int64_t uptime_s = (server.now_ms - server.db->start_ms) / 1000;
   resp_addf(&ctx->resp,
             "Uptime: %" PRId64 " seconds\n"
             "DB Size: %zu\n"

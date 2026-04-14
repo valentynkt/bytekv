@@ -1,6 +1,6 @@
 #include "db.h"
 #include "ht.h"
-#include "util.h"
+#include "server.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -10,8 +10,7 @@ db_t *db_create(void) {
   db_t *db = malloc(sizeof(*db));
   db->keyspace = ht_create(HT_VAL_STR);
   db->expires = ht_create(HT_VAL_I64);
-  db->now_ms = now_ms();
-  db->start_ms = db->now_ms;
+  db->start_ms = server.now_ms;
   return db;
 }
 
@@ -28,7 +27,7 @@ int db_del(db_t *db, const char *key) {
 
 static bool db_expire_clean(db_t *db, const char *key) {
   int64_t *expire_at = ht_get_i64(db->expires, key);
-  if (expire_at && db->now_ms > *expire_at) {
+  if (expire_at && server.now_ms > *expire_at) {
     db_del(db, key);
     return true;
   }
@@ -78,7 +77,7 @@ int64_t db_get_ttl(db_t *db, const char *key) {
   if (expire_at == NULL) {
     return -1;
   }
-  return (*expire_at - db->now_ms) / 1000;
+  return (*expire_at - server.now_ms) / 1000;
 }
 
 size_t db_active_sweep(db_t *db, size_t sample_size) {

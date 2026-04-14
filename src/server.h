@@ -15,6 +15,8 @@ typedef struct {
   bool active_expire_enabled;
   int active_expire_percent;
   int active_expire_keys_per_round;
+  int client_timeout_s;
+  int client_timeout_check_hz;
 } server_config_t;
 
 typedef struct {
@@ -31,6 +33,6 @@ typedef struct {
 
 extern server_t server;
 
-int server_main(void);
+int server_main(const char *configfile);
 
 #endif

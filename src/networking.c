@@ -185,9 +185,8 @@ void check_client_timeouts(event_loop_t *el) {
     if (!server.clients[i].active) {
       continue;
     }
-    int64_t idle_s =
-        (server.now_ms - server.clients[i].last_active_ms) / 1000;
-    if (idle_s >= CONFIG_DEFAULT_CLIENT_TIMEOUT_S) {
+    int64_t idle_s = (server.now_ms - server.clients[i].last_active_ms) / 1000;
+    if (idle_s >= server.config.client_timeout_s) {
       printf("client timed out (fd=%d, idle=%llds)\n", i, (long long)idle_s);
       remove_client(el, i);
     }

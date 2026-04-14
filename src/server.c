@@ -19,8 +19,8 @@ static void active_expire(void) {
   server_config_t *cfg = &server.config;
   int budget_ms = (1000 / cfg->hz) / 4;
   while (current - start < budget_ms) {
-    size_t expired =
-        db_active_sweep(server.db, cfg->active_expire_keys_per_round, server.now_ms);
+    size_t expired = db_active_sweep(
+        server.db, cfg->active_expire_keys_per_round, server.now_ms);
     bool below_threshold = expired * 100 / cfg->active_expire_keys_per_round <
                            (size_t)cfg->active_expire_percent;
     if (below_threshold)
@@ -36,7 +36,7 @@ static void before_sleep(void) {
   if (server.config.active_expire_enabled) {
     active_expire();
   }
-  if (server.cronloops % CONFIG_DEFAULT_CLIENT_TIMEOUT_CHECK_HZ == 0) {
+  if (server.cronloops % server.config.client_timeout_check_hz == 0) {
     check_client_timeouts(&server.el);
   }
 }
@@ -91,18 +91,7 @@ static void on_shutdown(event_loop_t *el, int fd) {
 
 /* --- lifecycle --- */
 
-static void init_server_config(void) {
-  server.config.port = CONFIG_DEFAULT_PORT;
-  server.config.tcp_backlog = CONFIG_DEFAULT_TCP_BACKLOG;
-  server.config.hz = CONFIG_DEFAULT_HZ;
-  server.config.active_expire_enabled = CONFIG_DEFAULT_ACTIVE_EXPIRE_ENABLED;
-  server.config.active_expire_percent = CONFIG_DEFAULT_ACTIVE_EXPIRE_PERCENT;
-  server.config.active_expire_keys_per_round =
-      CONFIG_DEFAULT_ACTIVE_EXPIRE_KEYS_PER_ROUND;
-}
-
 static int init_server(void) {
-  init_server_config();
   setup_signal_handlers();
 
   int server_fd =
@@ -169,7 +158,14 @@ static void shutdown_server(void) {
   db_free(server.db);
 }
 
-int server_main(void) {
+int server_main(const char *configfile) {
+  init_server_config();
+
+  if (configfile) {
+    if (load_config(configfile) == -1)
+      return EXIT_FAILURE;
+  }
+
   server.now_ms = now_ms();
   server.db = db_create(server.now_ms);
 

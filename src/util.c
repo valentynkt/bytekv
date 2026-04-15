@@ -48,42 +48,6 @@ int set_non_blocking(int fd) {
   return 0;
 }
 
-int create_listener(int port, int backlog) {
-  int fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (fd == -1) {
-    perror("socket");
-    return -1;
-  }
-
-  int opt = 1;
-  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
-    perror("setsockopt");
-    goto fail;
-  }
-
-  struct sockaddr_in addr = {
-      .sin_family = AF_INET,
-      .sin_port = htons(port),
-      .sin_addr.s_addr = INADDR_ANY,
-  };
-
-  if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
-    perror("bind");
-    goto fail;
-  }
-
-  if (listen(fd, backlog) == -1) {
-    perror("listen");
-    goto fail;
-  }
-
-  return fd;
-
-fail:
-  close(fd);
-  return -1;
-}
-
 int64_t now_ms(void) {
   struct timespec tp;
   clock_gettime(CLOCK_MONOTONIC, &tp);

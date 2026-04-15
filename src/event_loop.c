@@ -1,4 +1,5 @@
 #include "event_loop.h"
+#include "server.h"
 #include "util.h"
 #include <errno.h>
 #include <stdbool.h>
@@ -10,7 +11,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-
 int el_init(event_loop_t *el) {
   memset(el->read_handlers, 0, sizeof(el->read_handlers));
   memset(el->write_handlers, 0, sizeof(el->write_handlers));
@@ -18,6 +18,7 @@ int el_init(event_loop_t *el) {
   if (el->kq == -1)
     return -1;
 
+  el->poll_timeout_ms = 1000 / server.config.hz;
   return 0;
 }
 

@@ -19,4 +19,6 @@ typedef struct {
 
 void on_accept(event_loop_t *el, int fd);
 void check_client_timeouts(event_loop_t *el);
+int create_listener(int port, int backlog);
+
 #endif

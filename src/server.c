@@ -90,30 +90,7 @@ static void on_shutdown(event_loop_t *el, int fd) {
 }
 
 /* --- lifecycle --- */
-
-static int init_server(void) {
-  setup_signal_handlers();
-
-  int server_fd =
-      create_listener(server.config.port, server.config.tcp_backlog);
-  if (server_fd == -1)
-    return EXIT_FAILURE;
-
-  if (set_non_blocking(server_fd) == -1) {
-    close(server_fd);
-    return EXIT_FAILURE;
-  }
-
-  printf("[bytekv] listening on port %d (hz=%d)\n", server.config.port,
-         server.config.hz);
-
-  if (el_init(&server.el) == -1) {
-    close(server_fd);
-    return EXIT_FAILURE;
-  }
-  server.el.before_sleep_proc = before_sleep;
-  server.el.poll_timeout_ms = 1000 / server.config.hz;
-
+static int shutdown_pipe_setup(int server_fd) {
   if (pipe(server.pipe) == -1) {
     perror("pipe");
     close(server_fd);
@@ -125,6 +102,29 @@ static int init_server(void) {
     close(server_fd);
     close(server.pipe[0]);
     close(server.pipe[1]);
+    return EXIT_FAILURE;
+  }
+  return EXIT_SUCCESS;
+}
+
+static int init_server(void) {
+  setup_signal_handlers();
+
+  int server_fd =
+      create_listener(server.config.port, server.config.tcp_backlog);
+  if (server_fd == -1)
+    return EXIT_FAILURE;
+
+  printf("[bytekv] listening on port %d (hz=%d)\n", server.config.port,
+         server.config.hz);
+
+  if (el_init(&server.el) == -1) {
+    close(server_fd);
+    return EXIT_FAILURE;
+  }
+  server.el.before_sleep_proc = before_sleep;
+
+  if (shutdown_pipe_setup(server_fd) == EXIT_FAILURE) {
     return EXIT_FAILURE;
   }
 

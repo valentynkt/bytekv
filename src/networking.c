@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -181,14 +182,55 @@ void on_accept(event_loop_t *el, int server_fd) {
   }
 }
 void check_client_timeouts(event_loop_t *el) {
-  for (int i = 0; i < MAX_FDS; i++) {
-    if (!server.clients[i].active) {
+  size_t found = 0;
+  for (int i = 0; i < MAX_FDS && found < server.clients_count; i++) {
+    if (!server.clients[i].active)
       continue;
-    }
+    found++;
     int64_t idle_s = (server.now_ms - server.clients[i].last_active_ms) / 1000;
     if (idle_s >= server.config.client_timeout_s) {
       printf("client timed out (fd=%d, idle=%llds)\n", i, (long long)idle_s);
       remove_client(el, i);
     }
   }
+}
+
+int create_listener(int port, int backlog) {
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd == -1) {
+    perror("socket");
+    return -1;
+  }
+
+  int opt = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
+    perror("setsockopt");
+    goto fail;
+  }
+
+  struct sockaddr_in addr = {
+      .sin_family = AF_INET,
+      .sin_port = htons(port),
+      .sin_addr.s_addr = INADDR_ANY,
+  };
+
+  if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+    perror("bind");
+    goto fail;
+  }
+
+  if (listen(fd, backlog) == -1) {
+    perror("listen");
+    goto fail;
+  }
+
+  if (set_non_blocking(fd) == -1) {
+    close(fd);
+    return -1;
+  }
+  return fd;
+
+fail:
+  close(fd);
+  return -1;
 }

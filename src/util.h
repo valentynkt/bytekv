@@ -5,16 +5,22 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-
-typedef size_t ustime_t; /* microsecond time type. */
-typedef size_t mstime_t; /* millisecond time type. */
-
-ustime_t ustime(void);
-mstime_t mstime(void);
+#include <fcntl.h>
 
 ssize_t write_all(int fd, const char *buf, size_t len);
 int set_non_blocking(int fd);
 int create_listener(int port, int backlog);
+
+/* Monotonic milliseconds — immune to NTP/DST jumps.
+   Use for elapsed-time measurements (client idle, budgets, uptime). */
 int64_t now_ms(void);
+
+/* Wall-clock milliseconds since the Unix epoch.
+   Use for anything persisted or compared across process lifetimes
+   (e.g. TTL expire_at stored in AOF). */
+int64_t realtime_ms(void);
+
+int durable_flush(int fd);
+int open_aof(const char *path);
 
 #endif

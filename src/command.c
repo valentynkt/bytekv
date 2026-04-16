@@ -77,7 +77,7 @@ static bool parse_seconds(const char *s, int64_t *out) {
 static void cmd_get(command_ctx_t *ctx) {
   const char *key = ctx->argv[1];
 
-  char *val = db_get(server.db, key, server.now_ms);
+  char *val = db_get(server.db, key, server.now_realtime_ms);
   if (val == NULL) {
     resp_add(&ctx->resp, "-ERR key not found\n");
     return;
@@ -88,7 +88,7 @@ static void cmd_get(command_ctx_t *ctx) {
 static void cmd_ttl(command_ctx_t *ctx) {
   const char *key = ctx->argv[1];
 
-  int64_t ttl = db_get_ttl(server.db, key, server.now_ms);
+  int64_t ttl = db_get_ttl(server.db, key, server.now_realtime_ms);
   if (ttl == -2) {
     resp_add(&ctx->resp, "-ERR key not found\n");
     return;
@@ -120,7 +120,7 @@ static void cmd_setex(command_ctx_t *ctx) {
     resp_add(&ctx->resp, "-ERR invalid expire time\n");
     return;
   }
-  int64_t expire_at = server.now_ms + (seconds * 1000);
+  int64_t expire_at = server.now_realtime_ms + (seconds * 1000);
   if (db_setex(server.db, key, value, expire_at) == EXIT_FAILURE)
     resp_add(&ctx->resp, "-ERR SETEX COMMAND\n");
   else
@@ -136,7 +136,7 @@ static void cmd_expire(command_ctx_t *ctx) {
     resp_add(&ctx->resp, "-ERR invalid expire time\n");
     return;
   }
-  int64_t expire_at = server.now_ms + (seconds * 1000);
+  int64_t expire_at = server.now_realtime_ms + (seconds * 1000);
   if (db_key_expire(server.db, key, expire_at) == EXIT_FAILURE)
     resp_add(&ctx->resp, "-ERR EXPIRE COMMAND\n");
   else

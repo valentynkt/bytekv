@@ -1,25 +1,9 @@
 #include "util.h"
-#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <netinet/in.h>
 #include <stdio.h>
-#include <sys/socket.h>
-#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
-
-ustime_t ustime(void) {
-  struct timeval tv;
-  ustime_t ust;
-
-  gettimeofday(&tv, NULL);
-  ust = ((long long)tv.tv_sec) * 1000000;
-  ust += tv.tv_usec;
-  return ust;
-}
-
-mstime_t mstime(void) { return ustime() / 1000; }
 
 ssize_t write_all(int fd, const char *buf, size_t len) {
   size_t off = 0;
@@ -51,6 +35,31 @@ int set_non_blocking(int fd) {
 int64_t now_ms(void) {
   struct timespec tp;
   clock_gettime(CLOCK_MONOTONIC, &tp);
-  int64_t now_in_ms = (tp.tv_sec * 1000) + (tp.tv_nsec / 1000000);
-  return now_in_ms;
+  return ((int64_t)tp.tv_sec * 1000) + (tp.tv_nsec / 1000000);
+}
+
+int64_t realtime_ms(void) {
+  struct timespec tp;
+  clock_gettime(CLOCK_REALTIME, &tp);
+  return ((int64_t)tp.tv_sec * 1000) + (tp.tv_nsec / 1000000);
+}
+int durable_flush(int fd) {
+#if defined(__APPLE__)
+  if (fcntl(fd, F_FULLFSYNC) == 0)
+    return 0;
+  return fsync(fd);
+#elif defined(__linux__) // lowercase
+  return fdatasync(fd);
+#else
+  return fsync(fd);
+#endif
+}
+
+int open_aof(const char *path) {
+  int fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+  if (fd == -1) {
+    perror("open aof");
+    return -1;
+  }
+  return fd;
 }

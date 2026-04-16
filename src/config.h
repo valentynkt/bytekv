@@ -11,6 +11,14 @@
 #define FRAME_HDR_SIZE 4
 #define WBUF_SIZE ((MSG_MAX + FRAME_HDR_SIZE) * 2)
 
+/* AOF fsync policy. Keep the underlying values contiguous starting at 0 —
+   apply_config() writes the index of the matching string into the field. */
+typedef enum {
+  AOF_POLICY_NO = 0,
+  AOF_POLICY_PERTICK = 1,
+  AOF_POLICY_ALWAYS = 2,
+} aof_policy_t;
+
 /* Default values for runtime config */
 #define CONFIG_DEFAULT_PORT 9999
 #define CONFIG_DEFAULT_TCP_BACKLOG 511
@@ -20,11 +28,15 @@
 #define CONFIG_DEFAULT_ACTIVE_EXPIRE_KEYS_PER_ROUND 20
 #define CONFIG_DEFAULT_CLIENT_TIMEOUT_S 300
 #define CONFIG_DEFAULT_CLIENT_TIMEOUT_CHECK_HZ 10
+#define CONFIG_DEFAULT_AOF_CHECK_HZ 10
+#define CONFIG_DEFAULT_AOF_ENABLED true
+#define CONFIG_DEFAULT_AOF_POLICY AOF_POLICY_ALWAYS
 
 /* Config entry types */
 typedef enum {
   CONFIG_TYPE_INT,
   CONFIG_TYPE_BOOL,
+  CONFIG_TYPE_ENUM,
 } config_type_t;
 
 typedef struct {
@@ -33,6 +45,9 @@ typedef struct {
   size_t offset;
   int min;
   int max;
+  /* NULL-terminated list of accepted strings, only for CONFIG_TYPE_ENUM.
+     The index of the matching string becomes the stored int value. */
+  const char **enum_values;
 } config_entry_t;
 
 void init_server_config(void);

@@ -1,4 +1,5 @@
 #include "server.h"
+#include "aof.h"
 #include "config.h"
 #include "networking.h"
 #include "util.h"
@@ -8,19 +9,23 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
 server_t server;
 
 /* --- housekeeping --- */
 
-static void active_expire(void) {
+static void active_expire_cron(void) {
+  if (!server.config.active_expire_enabled)
+    return;
+
+  /* elapsed-time budget uses monotonic clock;
+     expire comparisons use wall-clock (matches stored expire_at) */
   int64_t start = server.now_ms;
   int64_t current = start;
   server_config_t *cfg = &server.config;
   int budget_ms = (1000 / cfg->hz) / 4;
   while (current - start < budget_ms) {
     size_t expired = db_active_sweep(
-        server.db, cfg->active_expire_keys_per_round, server.now_ms);
+        server.db, cfg->active_expire_keys_per_round, server.now_realtime_ms);
     bool below_threshold = expired * 100 / cfg->active_expire_keys_per_round <
                            (size_t)cfg->active_expire_percent;
     if (below_threshold)
@@ -31,14 +36,12 @@ static void active_expire(void) {
 
 static void before_sleep(void) {
   server.now_ms = now_ms();
+  server.now_realtime_ms = realtime_ms();
   server.cronloops++;
 
-  if (server.config.active_expire_enabled) {
-    active_expire();
-  }
-  if (server.cronloops % server.config.client_timeout_check_hz == 0) {
-    check_client_timeouts(&server.el);
-  }
+  active_expire_cron();
+  client_timeouts_cron(&server.el);
+  aof_cron();
 }
 
 /* --- signal handling --- */
@@ -108,12 +111,25 @@ static int shutdown_pipe_setup(int server_fd) {
 }
 
 static int init_server(void) {
+  server.now_ms = now_ms();
+  server.now_realtime_ms = realtime_ms();
+  server.db = db_create(server.now_ms);
+  server.aof_buf_dirty = false;
+
   setup_signal_handlers();
 
   int server_fd =
       create_listener(server.config.port, server.config.tcp_backlog);
   if (server_fd == -1)
     return EXIT_FAILURE;
+
+  if (server.config.aof_enabled) {
+    server.aof_fd = open_aof(server.config.aof_filename);
+    if (server.aof_fd == -1) {
+      close(server_fd);
+      return EXIT_FAILURE;
+    }
+  }
 
   printf("[bytekv] listening on port %d (hz=%d)\n", server.config.port,
          server.config.hz);
@@ -165,9 +181,6 @@ int server_main(const char *configfile) {
     if (load_config(configfile) == -1)
       return EXIT_FAILURE;
   }
-
-  server.now_ms = now_ms();
-  server.db = db_create(server.now_ms);
 
   if (init_server() == EXIT_FAILURE) {
     db_free(server.db);

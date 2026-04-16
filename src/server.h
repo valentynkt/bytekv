@@ -17,6 +17,10 @@ typedef struct {
   int active_expire_keys_per_round;
   int client_timeout_s;
   int client_timeout_check_hz;
+  int aof_check_hz;
+  char *aof_filename;
+  bool aof_enabled;
+  aof_policy_t aof_policy;
 } server_config_t;
 
 typedef struct {
@@ -28,7 +32,10 @@ typedef struct {
   int pipe[2];
   int64_t cronloops;
   db_t *db;
-  int64_t now_ms;
+  int64_t now_ms;          /* monotonic — for elapsed-time measurements */
+  int64_t now_realtime_ms; /* wall-clock — for persisted timestamps (TTL) */
+  int aof_fd;
+  bool aof_buf_dirty;
 } server_t;
 
 extern server_t server;

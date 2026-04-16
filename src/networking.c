@@ -96,6 +96,12 @@ static void process_buffer(event_loop_t *el, int fd) {
     char resp[MSG_MAX];
     char *payload = c->buf + FRAME_HDR_SIZE;
     size_t rlen = command_execute(payload, payload_len, resp, sizeof(resp));
+    // aof serialization and write?
+    server.aof_buf_dirty = true;
+    if (server.config.aof_policy == AOF_POLICY_ALWAYS) {
+      durable_flush(server.aof_fd);
+      server.aof_buf_dirty = false;
+    }
     if (!send_framed(el, fd, resp, (uint32_t)rlen))
       return;
 
@@ -181,7 +187,7 @@ void on_accept(event_loop_t *el, int server_fd) {
     server.clients_count--;
   }
 }
-void check_client_timeouts(event_loop_t *el) {
+static void check_client_timeouts(event_loop_t *el) {
   size_t found = 0;
   for (int i = 0; i < MAX_FDS && found < server.clients_count; i++) {
     if (!server.clients[i].active)
@@ -193,6 +199,12 @@ void check_client_timeouts(event_loop_t *el) {
       remove_client(el, i);
     }
   }
+}
+
+void client_timeouts_cron(event_loop_t *el) {
+  if (server.cronloops % server.config.client_timeout_check_hz != 0)
+    return;
+  check_client_timeouts(el);
 }
 
 int create_listener(int port, int backlog) {

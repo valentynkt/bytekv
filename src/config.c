@@ -6,20 +6,28 @@
 
 #define OFFSET(field) offsetof(server_config_t, field)
 
+/* Order must match aof_policy_t values in config.h */
+static const char *aof_policy_values[] = {"no", "pertick", "always", NULL};
+
 static config_entry_t config_table[] = {
-    {"port", CONFIG_TYPE_INT, OFFSET(port), 1, 65535},
-    {"tcp-backlog", CONFIG_TYPE_INT, OFFSET(tcp_backlog), 1, 65535},
-    {"hz", CONFIG_TYPE_INT, OFFSET(hz), 1, 500},
-    {"active-expire-enabled", CONFIG_TYPE_BOOL, OFFSET(active_expire_enabled), 0,
-     1},
+    {"port", CONFIG_TYPE_INT, OFFSET(port), 1, 65535, NULL},
+    {"tcp-backlog", CONFIG_TYPE_INT, OFFSET(tcp_backlog), 1, 65535, NULL},
+    {"hz", CONFIG_TYPE_INT, OFFSET(hz), 1, 500, NULL},
+    {"active-expire-enabled", CONFIG_TYPE_BOOL, OFFSET(active_expire_enabled),
+     0, 1, NULL},
     {"active-expire-percent", CONFIG_TYPE_INT, OFFSET(active_expire_percent), 1,
-     100},
+     100, NULL},
     {"active-expire-keys-per-round", CONFIG_TYPE_INT,
-     OFFSET(active_expire_keys_per_round), 1, 1000},
-    {"client-timeout", CONFIG_TYPE_INT, OFFSET(client_timeout_s), 0, 86400},
+     OFFSET(active_expire_keys_per_round), 1, 1000, NULL},
+    {"client-timeout", CONFIG_TYPE_INT, OFFSET(client_timeout_s), 0, 86400,
+     NULL},
     {"client-timeout-check-hz", CONFIG_TYPE_INT,
-     OFFSET(client_timeout_check_hz), 1, 100},
-    {NULL, 0, 0, 0, 0},
+     OFFSET(client_timeout_check_hz), 1, 100, NULL},
+    {"aof-enabled", CONFIG_TYPE_BOOL, OFFSET(aof_enabled), 0, 1, NULL},
+    {"aof-check-hz", CONFIG_TYPE_INT, OFFSET(aof_check_hz), 1, 100, NULL},
+    {"appendfsync", CONFIG_TYPE_ENUM, OFFSET(aof_policy), 0, 0,
+     aof_policy_values},
+    {NULL, 0, 0, 0, 0, NULL},
 };
 
 void init_server_config(void) {
@@ -31,7 +39,11 @@ void init_server_config(void) {
   server.config.active_expire_keys_per_round =
       CONFIG_DEFAULT_ACTIVE_EXPIRE_KEYS_PER_ROUND;
   server.config.client_timeout_s = CONFIG_DEFAULT_CLIENT_TIMEOUT_S;
-  server.config.client_timeout_check_hz = CONFIG_DEFAULT_CLIENT_TIMEOUT_CHECK_HZ;
+  server.config.client_timeout_check_hz =
+      CONFIG_DEFAULT_CLIENT_TIMEOUT_CHECK_HZ;
+  server.config.aof_check_hz = CONFIG_DEFAULT_AOF_CHECK_HZ;
+  server.config.aof_enabled = CONFIG_DEFAULT_AOF_ENABLED;
+  server.config.aof_policy = CONFIG_DEFAULT_AOF_POLICY;
 }
 
 static config_entry_t *find_config(const char *name) {
@@ -73,6 +85,21 @@ static int apply_config(config_entry_t *entry, const char *value) {
       return -1;
     }
     break;
+  }
+  case CONFIG_TYPE_ENUM: {
+    for (int i = 0; entry->enum_values[i] != NULL; i++) {
+      if (strcmp(entry->enum_values[i], value) == 0) {
+        *(int *)target = i;
+        return 0;
+      }
+    }
+    fprintf(stderr, "config error: '%s' invalid value '%s', expected one of:",
+            entry->name, value);
+    for (int i = 0; entry->enum_values[i] != NULL; i++) {
+      fprintf(stderr, " %s", entry->enum_values[i]);
+    }
+    fprintf(stderr, "\n");
+    return -1;
   }
   }
   return 0;

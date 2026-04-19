@@ -96,12 +96,6 @@ static void process_buffer(event_loop_t *el, int fd) {
     char resp[MSG_MAX];
     char *payload = c->buf + FRAME_HDR_SIZE;
     size_t rlen = command_execute(payload, payload_len, resp, sizeof(resp));
-    // aof serialization and write?
-    server.aof_buf_dirty = true;
-    if (server.config.aof_policy == AOF_POLICY_ALWAYS) {
-      durable_flush(server.aof_fd);
-      server.aof_buf_dirty = false;
-    }
     if (!send_framed(el, fd, resp, (uint32_t)rlen))
       return;
 

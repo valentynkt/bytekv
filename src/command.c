@@ -1,4 +1,5 @@
 #include "command.h"
+#include "aof.h"
 #include "server.h"
 #include <inttypes.h>
 #include <stdarg.h>
@@ -32,6 +33,7 @@ typedef struct {
   const char *name;
   cmd_proc_t *proc;
   int arity;
+  aof_opcode_t aof_op; /* 0 = read-only, don't log to AOF */
 } command_entry_t;
 
 /* response helpers */
@@ -104,10 +106,12 @@ static void cmd_set(command_ctx_t *ctx) {
   const char *key = ctx->argv[1];
   const char *value = ctx->argv[2];
 
-  if (db_set(server.db, key, value) == EXIT_FAILURE)
+  if (db_set(server.db, key, value) == EXIT_FAILURE) {
     resp_add(&ctx->resp, "-ERR SET COMMAND\n");
-  else
-    resp_add(&ctx->resp, "+OK\n");
+    return;
+  }
+  aof_append(AOF_OP_SET, key, strlen(key), value, strlen(value), 0);
+  resp_add(&ctx->resp, "+OK\n");
 }
 
 static void cmd_setex(command_ctx_t *ctx) {
@@ -121,10 +125,12 @@ static void cmd_setex(command_ctx_t *ctx) {
     return;
   }
   int64_t expire_at = server.now_realtime_ms + (seconds * 1000);
-  if (db_setex(server.db, key, value, expire_at) == EXIT_FAILURE)
+  if (db_setex(server.db, key, value, expire_at) == EXIT_FAILURE) {
     resp_add(&ctx->resp, "-ERR SETEX COMMAND\n");
-  else
-    resp_add(&ctx->resp, "+OK\n");
+    return;
+  }
+  aof_append(AOF_OP_SETEX, key, strlen(key), value, strlen(value), expire_at);
+  resp_add(&ctx->resp, "+OK\n");
 }
 
 static void cmd_expire(command_ctx_t *ctx) {
@@ -137,28 +143,34 @@ static void cmd_expire(command_ctx_t *ctx) {
     return;
   }
   int64_t expire_at = server.now_realtime_ms + (seconds * 1000);
-  if (db_key_expire(server.db, key, expire_at) == EXIT_FAILURE)
+  if (db_key_expire(server.db, key, expire_at) == EXIT_FAILURE) {
     resp_add(&ctx->resp, "-ERR EXPIRE COMMAND\n");
-  else
-    resp_add(&ctx->resp, "+OK\n");
+    return;
+  }
+  aof_append(AOF_OP_EXPIRE, key, strlen(key), NULL, 0, expire_at);
+  resp_add(&ctx->resp, "+OK\n");
 }
 
 static void cmd_persist(command_ctx_t *ctx) {
   const char *key = ctx->argv[1];
 
-  if (db_persist(server.db, key) == EXIT_FAILURE)
+  if (db_persist(server.db, key) == EXIT_FAILURE) {
     resp_add(&ctx->resp, "-ERR PERSIST COMMAND\n");
-  else
-    resp_add(&ctx->resp, "+OK\n");
+    return;
+  }
+  aof_append(AOF_OP_PERSIST, key, strlen(key), NULL, 0, 0);
+  resp_add(&ctx->resp, "+OK\n");
 }
 
 static void cmd_del(command_ctx_t *ctx) {
   const char *key = ctx->argv[1];
 
-  if (db_del(server.db, key) == EXIT_FAILURE)
+  if (db_del(server.db, key) == EXIT_FAILURE) {
     resp_add(&ctx->resp, "-ERR DEL COMMAND\n");
-  else
-    resp_add(&ctx->resp, "+OK\n");
+    return;
+  }
+  aof_append(AOF_OP_DEL, key, strlen(key), NULL, 0, 0);
+  resp_add(&ctx->resp, "+OK\n");
 }
 
 static void cmd_keys(command_ctx_t *ctx) {
@@ -184,11 +196,16 @@ static void cmd_info(command_ctx_t *ctx) {
 /* command table */
 
 static command_entry_t command_table[] = {
-    {"GET", cmd_get, 2},       {"TTL", cmd_ttl, 2},
-    {"SET", cmd_set, -3},      {"SETEX", cmd_setex, 4},
-    {"EXPIRE", cmd_expire, 3}, {"PERSIST", cmd_persist, 2},
-    {"DEL", cmd_del, 2},       {"KEYS", cmd_keys, 1},
-    {"INFO", cmd_info, 1},     {NULL, NULL, 0},
+    {"GET", cmd_get, 2, 0},
+    {"TTL", cmd_ttl, 2, 0},
+    {"SET", cmd_set, -3, AOF_OP_SET},
+    {"SETEX", cmd_setex, 4, AOF_OP_SETEX},
+    {"EXPIRE", cmd_expire, 3, AOF_OP_EXPIRE},
+    {"PERSIST", cmd_persist, 2, AOF_OP_PERSIST},
+    {"DEL", cmd_del, 2, AOF_OP_DEL},
+    {"KEYS", cmd_keys, 1, 0},
+    {"INFO", cmd_info, 1, 0},
+    {NULL, NULL, 0, 0},
 };
 
 static command_entry_t *lookup_command(const char *name) {

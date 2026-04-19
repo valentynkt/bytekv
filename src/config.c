@@ -25,6 +25,7 @@ static config_entry_t config_table[] = {
      OFFSET(client_timeout_check_hz), 1, 100, NULL},
     {"aof-enabled", CONFIG_TYPE_BOOL, OFFSET(aof_enabled), 0, 1, NULL},
     {"aof-check-hz", CONFIG_TYPE_INT, OFFSET(aof_check_hz), 1, 100, NULL},
+    {"aof-filename", CONFIG_TYPE_STRING, OFFSET(aof_filename), 0, 0, NULL},
     {"appendfsync", CONFIG_TYPE_ENUM, OFFSET(aof_policy), 0, 0,
      aof_policy_values},
     {NULL, 0, 0, 0, 0, NULL},
@@ -44,6 +45,7 @@ void init_server_config(void) {
   server.config.aof_check_hz = CONFIG_DEFAULT_AOF_CHECK_HZ;
   server.config.aof_enabled = CONFIG_DEFAULT_AOF_ENABLED;
   server.config.aof_policy = CONFIG_DEFAULT_AOF_POLICY;
+  server.config.aof_filename = strdup(CONFIG_DEFAULT_AOF_FILENAME);
 }
 
 static config_entry_t *find_config(const char *name) {
@@ -84,6 +86,16 @@ static int apply_config(config_entry_t *entry, const char *value) {
               entry->name, value);
       return -1;
     }
+    break;
+  }
+  case CONFIG_TYPE_STRING: {
+    char *copy = strdup(value);
+    if (!copy) {
+      fprintf(stderr, "config error: out of memory for '%s'\n", entry->name);
+      return -1;
+    }
+    free(*(char **)target);
+    *(char **)target = copy;
     break;
   }
   case CONFIG_TYPE_ENUM: {

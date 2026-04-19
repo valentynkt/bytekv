@@ -78,13 +78,13 @@ static void on_shutdown(event_loop_t *el, int fd) {
     for (ssize_t i = 0; i < n; i++) {
       switch (buf[i]) {
       case SIGINT:
-        printf("Received SIGINT, shutting down...\n");
+        fprintf(stderr, "Received SIGINT, shutting down...\n");
         break;
       case SIGTERM:
-        printf("Received SIGTERM, shutting down...\n");
+        fprintf(stderr, "Received SIGTERM, shutting down...\n");
         break;
       default:
-        printf("Received signal %d, shutting down...\n", buf[i]);
+        fprintf(stderr, "Received signal %d, shutting down...\n", buf[i]);
         break;
       }
     }
@@ -117,6 +117,12 @@ static int init_server(void) {
   server.aof_buf_dirty = false;
 
   setup_signal_handlers();
+
+  /* replay AOF before accepting connections */
+  if (server.config.aof_enabled && server.config.aof_filename) {
+    if (aof_load(server.config.aof_filename) == -1)
+      return EXIT_FAILURE;
+  }
 
   int server_fd =
       create_listener(server.config.port, server.config.tcp_backlog);

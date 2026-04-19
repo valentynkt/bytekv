@@ -5,6 +5,23 @@
 #include <time.h>
 #include <unistd.h>
 
+ssize_t read_exact(int fd, char *buf, size_t len) {
+  size_t off = 0;
+  while (off < len) {
+    ssize_t n = read(fd, buf + off, len - off);
+    if (n == -1) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return -1;
+    }
+    if (n == 0)
+      return (ssize_t)off;
+    off += n;
+  }
+  return (ssize_t)off;
+}
+
 ssize_t write_all(int fd, const char *buf, size_t len) {
   size_t off = 0;
   while (off < len) {
@@ -56,7 +73,11 @@ int durable_flush(int fd) {
 }
 
 int open_aof(const char *path) {
-  int fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+  if (path == NULL) {
+    fprintf(stderr, "[bytekv] open_aof: path is NULL\n");
+    return -1;
+  }
+  int fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
   if (fd == -1) {
     perror("open aof");
     return -1;

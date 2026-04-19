@@ -31,12 +31,14 @@ typedef enum {
 #define CONFIG_DEFAULT_AOF_CHECK_HZ 10
 #define CONFIG_DEFAULT_AOF_ENABLED true
 #define CONFIG_DEFAULT_AOF_POLICY AOF_POLICY_ALWAYS
+#define CONFIG_DEFAULT_AOF_FILENAME "bytekv.aof"
 
 /* Config entry types */
 typedef enum {
   CONFIG_TYPE_INT,
   CONFIG_TYPE_BOOL,
   CONFIG_TYPE_ENUM,
+  CONFIG_TYPE_STRING,
 } config_type_t;
 
 typedef struct {

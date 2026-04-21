@@ -338,6 +338,10 @@ void aof_rewrite_cron(void) {
   if (!server.config.aof_enabled)
     return;
 
+  /* check once per second, not every tick */
+  if (server.cronloops % server.config.hz != 0)
+    return;
+
   /* no child running, maybe start one */
   if (server.aof_rewrite_pid == -1) {
     struct stat st;

@@ -18,7 +18,7 @@ ht_t *ht_create(ht_val_type_t val_type) {
   return ht;
 }
 
-/* djb2 hash — returns raw hash, caller applies sizemask */
+/* djb2 hash, returns raw hash, caller applies sizemask */
 static size_t ht_hash(const char *key) {
   size_t hash = 5381;
   int c;

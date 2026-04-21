@@ -56,7 +56,7 @@ static bool queue_write(event_loop_t *el, int fd, const char *data,
     } else {
       c->woff += n;
       if (c->woff == c->wlen) {
-        /* Everything sent — skip kqueue entirely */
+        /* everything sent, skip kqueue */
         c->woff = 0;
         c->wlen = 0;
         return true;

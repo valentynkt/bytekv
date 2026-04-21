@@ -6,7 +6,7 @@
 
 #include "config.h"
 
-/* AOF opcodes — one per mutation command, written as a single byte. */
+/* AOF opcodes, one per mutation command, written as a single byte. */
 typedef enum {
   AOF_OP_SET = 1,
   AOF_OP_DEL = 2,
@@ -19,21 +19,25 @@ typedef enum {
    All multi-byte integers are big-endian (network byte order).
 
    ┌───────────┬──────────────┬────────┬─────────┬─────────┬───────────┬─────────────┐
-   │ 8B CRC64  │ 4B body_len  │ 1B op  │ 2B klen │ 4B vlen │ 8B expire │ key + value │
+   │ 8B CRC64  │ 4B body_len  │ 1B op  │ 2B klen │ 4B vlen │ 8B expire │ key +
+   value │
    └───────────┴──────────────┴────────┴─────────┴─────────┴───────────┴─────────────┘
-   |--------- header (12B) ---------|  |---------------- body (body_len) ------------|
+   |--------- header (12B) ---------|  |---------------- body (body_len)
+   ------------|
 
    CRC64 covers everything from body_len through end of body.
    body_len = 1 + 2 + 4 + 8 + key_len + val_len  (everything after body_len). */
 
-#define AOF_CRC_SIZE      8
-#define AOF_BODYLEN_SIZE  4
-#define AOF_HEADER_SIZE   (AOF_CRC_SIZE + AOF_BODYLEN_SIZE) /* 12 bytes */
-#define AOF_BODY_FIXED    15  /* 1 (op) + 2 (klen) + 4 (vlen) + 8 (expire) */
-#define AOF_RECORD_MAX    MSG_MAX
+#define AOF_CRC_SIZE 8
+#define AOF_BODYLEN_SIZE 4
+#define AOF_HEADER_SIZE (AOF_CRC_SIZE + AOF_BODYLEN_SIZE) /* 12 bytes */
+#define AOF_BODY_FIXED 15 /* 1 (op) + 2 (klen) + 4 (vlen) + 8 (expire) */
+#define AOF_RECORD_MAX MSG_MAX
 
 /* Periodic fsync for pertick policy. */
 void aof_cron(void);
+void aof_rewrite_cron(void);
+int aof_rewrite_start(void);
 
 /* Append one mutation to the AOF. Returns 0 on success, -1 on error. */
 int aof_append(aof_opcode_t op, const char *key, size_t key_len,

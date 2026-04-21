@@ -193,6 +193,18 @@ static void cmd_info(command_ctx_t *ctx) {
             uptime_s, server.db->keyspace->size, server.db->keyspace->used);
 }
 
+static void cmd_bgrewriteaof(command_ctx_t *ctx) {
+  if (server.aof_rewrite_pid > 0) {
+    resp_add(&ctx->resp, "-ERR rewrite already in progress\n");
+    return;
+  }
+  if (aof_rewrite_start() == -1) {
+    resp_add(&ctx->resp, "-ERR failed to start rewrite\n");
+    return;
+  }
+  resp_add(&ctx->resp, "+OK background rewrite started\n");
+}
+
 /* command table */
 
 static command_entry_t command_table[] = {
@@ -205,6 +217,7 @@ static command_entry_t command_table[] = {
     {"DEL", cmd_del, 2, AOF_OP_DEL},
     {"KEYS", cmd_keys, 1, 0},
     {"INFO", cmd_info, 1, 0},
+    {"BGREWRITEAOF", cmd_bgrewriteaof, 1, 0},
     {NULL, NULL, 0, 0},
 };
 

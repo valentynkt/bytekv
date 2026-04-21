@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /* Serialization                                                       */
@@ -70,6 +71,22 @@ int aof_append(aof_opcode_t op, const char *key, size_t key_len,
   ssize_t nwritten = write_all(server.aof_fd, (const char *)buf, record_size);
   if (nwritten == -1)
     return EXIT_FAILURE;
+
+  if (server.aof_rewrite_pid > 0 && server.aof_rewrite_buf) {
+    size_t needed = server.aof_rewrite_len + record_size;
+    if (needed > server.aof_rewrite_cap) {
+      size_t new_cap = server.aof_rewrite_cap * 2;
+      if (new_cap < needed)
+        new_cap = needed;
+      char *new_buf = realloc(server.aof_rewrite_buf, new_cap);
+      if (!new_buf)
+        return EXIT_FAILURE;
+      server.aof_rewrite_buf = new_buf;
+      server.aof_rewrite_cap = new_cap;
+    }
+    memcpy(server.aof_rewrite_buf + server.aof_rewrite_len, buf, record_size);
+    server.aof_rewrite_len += record_size;
+  }
 
   server.aof_buf_dirty = true;
   if (server.config.aof_policy == AOF_POLICY_ALWAYS) {
@@ -216,4 +233,144 @@ void aof_cron(void) {
     return;
   }
   server.aof_buf_dirty = false;
+}
+
+static void aof_rewrite_child(void) {
+  int fd = open("temp.aof", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  if (fd == -1)
+    _exit(1);
+
+  uint8_t buf[AOF_RECORD_MAX];
+  ht_iter_t *iter = ht_iter_create(server.db->keyspace);
+  ht_entry_t *entry;
+
+  while ((entry = ht_iter_next(iter)) != NULL) {
+    int64_t *expire = ht_get_i64(server.db->expires, entry->key);
+    if (expire && *expire < realtime_ms())
+      continue;
+
+    aof_opcode_t op = expire ? AOF_OP_SETEX : AOF_OP_SET;
+    int64_t expire_at = expire ? *expire : 0;
+
+    ssize_t record_size =
+        aof_serialize(buf, sizeof(buf), op, entry->key, strlen(entry->key),
+                      entry->val.str, strlen(entry->val.str), expire_at);
+    if (record_size == -1)
+      _exit(1);
+    if (write_all(fd, (const char *)buf, record_size) == -1)
+      _exit(1);
+  }
+
+  free(iter);
+  if (durable_flush(fd) == -1)
+    _exit(1);
+  close(fd);
+  _exit(0);
+}
+
+int aof_rewrite_start(void) {
+  pid_t pid = fork();
+  if (pid < 0) {
+    perror("aof rewrite: fork");
+    return -1;
+  }
+  if (pid == 0) {
+    aof_rewrite_child();
+  }
+  /* parent */
+  server.aof_rewrite_pid = pid;
+  server.aof_rewrite_len = 0;
+  server.aof_rewrite_buf = malloc(server.aof_rewrite_cap);
+  return 0;
+}
+
+static void aof_rewrite_cleanup(void) {
+  free(server.aof_rewrite_buf);
+  server.aof_rewrite_buf = NULL;
+  server.aof_rewrite_len = 0;
+  server.aof_rewrite_pid = -1;
+}
+
+static void aof_rewrite_finalize(void) {
+  int temp_fd = open("temp.aof", O_WRONLY | O_APPEND | O_CLOEXEC);
+  if (temp_fd == -1) {
+    perror("aof rewrite finalize: open");
+    goto fail;
+  }
+
+  if (write_all(temp_fd, server.aof_rewrite_buf, server.aof_rewrite_len) ==
+      -1) {
+    perror("aof rewrite finalize: write");
+    close(temp_fd);
+    goto fail;
+  }
+
+  if (durable_flush(temp_fd) == -1) {
+    perror("aof rewrite finalize: fsync");
+    close(temp_fd);
+    goto fail;
+  }
+  close(temp_fd);
+
+  if (rename("temp.aof", server.config.aof_filename) == -1) {
+    perror("aof rewrite finalize: rename");
+    goto fail;
+  }
+
+  close(server.aof_fd);
+  server.aof_fd = open_aof(server.config.aof_filename);
+
+  struct stat st;
+  if (stat(server.config.aof_filename, &st) == 0)
+    server.aof_rewrite_last_size = st.st_size;
+
+  aof_rewrite_cleanup();
+  printf("[bytekv] aof rewrite complete\n");
+  return;
+
+fail:
+  fprintf(stderr, "[bytekv] aof rewrite failed, keeping old AOF\n");
+  unlink("temp.aof");
+  aof_rewrite_cleanup();
+}
+
+void aof_rewrite_cron(void) {
+  if (!server.config.aof_enabled)
+    return;
+
+  /* no child running, maybe start one */
+  if (server.aof_rewrite_pid == -1) {
+    struct stat st;
+    if (stat(server.config.aof_filename, &st) != 0)
+      return;
+    if (st.st_size < server.config.aof_rewrite_min_size)
+      return;
+    off_t threshold = server.aof_rewrite_last_size +
+                      server.aof_rewrite_last_size *
+                          server.config.aof_rewrite_growth / 100;
+    if (st.st_size < threshold)
+      return;
+    aof_rewrite_start();
+    return;
+  }
+
+  /* child running, check if done */
+  int status;
+  pid_t result = waitpid(server.aof_rewrite_pid, &status, WNOHANG);
+  if (result == 0)
+    return; /* still working */
+  if (result == -1) {
+    perror("aof rewrite: waitpid");
+    aof_rewrite_cleanup();
+    return;
+  }
+
+  /* child finished */
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+    aof_rewrite_finalize();
+  } else {
+    fprintf(stderr, "[bytekv] aof rewrite: child failed (status %d)\n", status);
+    unlink("temp.aof");
+    aof_rewrite_cleanup();
+  }
 }

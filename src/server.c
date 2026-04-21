@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 server_t server;
 
@@ -42,6 +43,7 @@ static void before_sleep(void) {
   active_expire_cron();
   client_timeouts_cron(&server.el);
   aof_cron();
+  aof_rewrite_cron();
 }
 
 /* --- signal handling --- */
@@ -115,6 +117,8 @@ static int init_server(void) {
   server.now_realtime_ms = realtime_ms();
   server.db = db_create(server.now_ms);
   server.aof_buf_dirty = false;
+  server.aof_rewrite_pid = -1;
+  server.aof_rewrite_cap = AOF_RECORD_MAX * 64;
 
   setup_signal_handlers();
 
@@ -135,6 +139,9 @@ static int init_server(void) {
       close(server_fd);
       return EXIT_FAILURE;
     }
+    struct stat st;
+    if (stat(server.config.aof_filename, &st) == 0)
+      server.aof_rewrite_last_size = st.st_size;
   }
 
   printf("[bytekv] listening on port %d (hz=%d)\n", server.config.port,

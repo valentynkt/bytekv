@@ -11,8 +11,8 @@
 #define FRAME_HDR_SIZE 4
 #define WBUF_SIZE ((MSG_MAX + FRAME_HDR_SIZE) * 2)
 
-/* AOF fsync policy. Keep the underlying values contiguous starting at 0 —
-   apply_config() writes the index of the matching string into the field. */
+/* AOF fsync policy. Values must start at 0 and stay contiguous,
+   apply_config() stores the matched string's index. */
 typedef enum {
   AOF_POLICY_NO = 0,
   AOF_POLICY_PERTICK = 1,
@@ -32,6 +32,8 @@ typedef enum {
 #define CONFIG_DEFAULT_AOF_ENABLED true
 #define CONFIG_DEFAULT_AOF_POLICY AOF_POLICY_ALWAYS
 #define CONFIG_DEFAULT_AOF_FILENAME "bytekv.aof"
+#define CONFIG_DEFAULT_AOF_REWRITE_MIN_SIZE (1 * 1024 * 1024) /* 1MB */
+#define CONFIG_DEFAULT_AOF_REWRITE_GROWTH 100 /* trigger at 100% growth (2x) */
 
 /* Config entry types */
 typedef enum {

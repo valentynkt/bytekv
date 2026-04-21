@@ -2,6 +2,7 @@
 #define SERVER_H
 
 #include <stdbool.h>
+#include <sys/types.h>
 
 #include "config.h"
 #include "db.h"
@@ -21,6 +22,8 @@ typedef struct {
   char *aof_filename;
   bool aof_enabled;
   aof_policy_t aof_policy;
+  int aof_rewrite_min_size;
+  int aof_rewrite_growth;
 } server_config_t;
 
 typedef struct {
@@ -32,10 +35,15 @@ typedef struct {
   int pipe[2];
   int64_t cronloops;
   db_t *db;
-  int64_t now_ms;          /* monotonic — for elapsed-time measurements */
-  int64_t now_realtime_ms; /* wall-clock — for persisted timestamps (TTL) */
+  int64_t now_ms;          /* monotonic, for elapsed time */
+  int64_t now_realtime_ms; /* wall clock, for persisted timestamps */
   int aof_fd;
   bool aof_buf_dirty;
+  int aof_rewrite_pid;   /* -1= idle, >0 = child pid */
+  char *aof_rewrite_buf; /* accumulated mutations */
+  size_t aof_rewrite_len;
+  size_t aof_rewrite_cap;
+  off_t aof_rewrite_last_size;
 } server_t;
 
 extern server_t server;

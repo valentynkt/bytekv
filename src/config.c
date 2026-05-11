@@ -30,6 +30,8 @@ static config_entry_t config_table[] = {
      0, 2000000000, NULL},
     {"aof-rewrite-growth", CONFIG_TYPE_INT, OFFSET(aof_rewrite_growth),
      10, 1000, NULL},
+    {"aof-rewrite-buf-max-size", CONFIG_TYPE_INT,
+     OFFSET(aof_rewrite_buf_max_size), 1024 * 1024, 2000000000, NULL},
     {"appendfsync", CONFIG_TYPE_ENUM, OFFSET(aof_policy), 0, 0,
      aof_policy_values},
     {NULL, 0, 0, 0, 0, NULL},
@@ -52,6 +54,8 @@ void init_server_config(void) {
   server.config.aof_filename = strdup(CONFIG_DEFAULT_AOF_FILENAME);
   server.config.aof_rewrite_min_size = CONFIG_DEFAULT_AOF_REWRITE_MIN_SIZE;
   server.config.aof_rewrite_growth = CONFIG_DEFAULT_AOF_REWRITE_GROWTH;
+  server.config.aof_rewrite_buf_max_size =
+      CONFIG_DEFAULT_AOF_REWRITE_BUF_MAX_SIZE;
 }
 
 static config_entry_t *find_config(const char *name) {

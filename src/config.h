@@ -34,6 +34,8 @@ typedef enum {
 #define CONFIG_DEFAULT_AOF_FILENAME "bytekv.aof"
 #define CONFIG_DEFAULT_AOF_REWRITE_MIN_SIZE (1 * 1024 * 1024) /* 1MB */
 #define CONFIG_DEFAULT_AOF_REWRITE_GROWTH 100 /* trigger at 100% growth (2x) */
+#define CONFIG_DEFAULT_AOF_REWRITE_BUF_MAX_SIZE                                \
+  (128 * 1024 * 1024) /* 128MB hard cap on in-memory diff during rewrite */
 
 /* Config entry types */
 typedef enum {

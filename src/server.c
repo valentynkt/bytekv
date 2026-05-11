@@ -119,6 +119,7 @@ static int init_server(void) {
   server.aof_buf_dirty = false;
   server.aof_rewrite_pid = -1;
   server.aof_rewrite_cap = AOF_RECORD_MAX * 64;
+  server.aof_rewrite_aborted = false;
 
   setup_signal_handlers();
 

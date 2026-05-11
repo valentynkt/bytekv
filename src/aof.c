@@ -5,6 +5,9 @@
 #include "server.h"
 #include "util.h"
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #if defined(__linux__)
@@ -74,18 +77,42 @@ int aof_append(aof_opcode_t op, const char *key, size_t key_len,
 
   if (server.aof_rewrite_pid > 0 && server.aof_rewrite_buf) {
     size_t needed = server.aof_rewrite_len + record_size;
+    size_t max_cap = (size_t)server.config.aof_rewrite_buf_max_size;
+
     if (needed > server.aof_rewrite_cap) {
-      size_t new_cap = server.aof_rewrite_cap * 2;
-      if (new_cap < needed)
-        new_cap = needed;
-      char *new_buf = realloc(server.aof_rewrite_buf, new_cap);
-      if (!new_buf)
-        return EXIT_FAILURE;
-      server.aof_rewrite_buf = new_buf;
-      server.aof_rewrite_cap = new_cap;
+      if (needed > max_cap) {
+        /* Diff buffer would exceed the hard cap. Abort the rewrite to keep
+           serving — the live AOF on disk is still authoritative; the next
+           rewrite attempt will try again from a fresh snapshot. */
+        fprintf(stderr,
+                "[bytekv] aof rewrite: diff buf would exceed %zu bytes, "
+                "aborting rewrite (live AOF unaffected)\n",
+                max_cap);
+        kill(server.aof_rewrite_pid, SIGTERM);
+        free(server.aof_rewrite_buf);
+        server.aof_rewrite_buf = NULL;
+        server.aof_rewrite_len = 0;
+        server.aof_rewrite_aborted = true;
+        /* fall through to fsync path below */
+      } else {
+        size_t new_cap = server.aof_rewrite_cap * 2;
+        if (new_cap < needed)
+          new_cap = needed;
+        if (new_cap > max_cap)
+          new_cap = max_cap;
+        char *new_buf = realloc(server.aof_rewrite_buf, new_cap);
+        if (!new_buf)
+          return EXIT_FAILURE;
+        server.aof_rewrite_buf = new_buf;
+        server.aof_rewrite_cap = new_cap;
+        memcpy(server.aof_rewrite_buf + server.aof_rewrite_len, buf,
+               record_size);
+        server.aof_rewrite_len += record_size;
+      }
+    } else {
+      memcpy(server.aof_rewrite_buf + server.aof_rewrite_len, buf, record_size);
+      server.aof_rewrite_len += record_size;
     }
-    memcpy(server.aof_rewrite_buf + server.aof_rewrite_len, buf, record_size);
-    server.aof_rewrite_len += record_size;
   }
 
   server.aof_buf_dirty = true;
@@ -160,6 +187,43 @@ static int aof_replay_record(const uint8_t *buf, uint32_t body_len) {
   return result;
 }
 
+/* Copy bytes [from, from + len) of src_fd into a new quarantine file named
+   "<path>.corrupt-<timestamp>". Best-effort: errors are logged but do not
+   propagate, since this is a forensic capture, not a correctness operation. */
+static void aof_quarantine_tail(const char *path, int src_fd, off_t from,
+                                off_t len) {
+  char quarantine[512];
+  snprintf(quarantine, sizeof(quarantine), "%s.corrupt-%lld", path,
+           (long long)realtime_ms());
+  int qfd = open(quarantine, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  if (qfd == -1) {
+    fprintf(stderr,
+            "[bytekv] aof: WARNING could not open quarantine '%s': %s\n",
+            quarantine, strerror(errno));
+    return;
+  }
+  if (lseek(src_fd, from, SEEK_SET) == (off_t)-1) {
+    perror("aof quarantine: lseek");
+    close(qfd);
+    return;
+  }
+  char buf[8192];
+  off_t remaining = len;
+  while (remaining > 0) {
+    size_t chunk = remaining > (off_t)sizeof(buf) ? sizeof(buf) : remaining;
+    ssize_t n = read(src_fd, buf, chunk);
+    if (n <= 0)
+      break;
+    if (write_all(qfd, buf, n) == -1) {
+      perror("aof quarantine: write");
+      break;
+    }
+    remaining -= n;
+  }
+  close(qfd);
+  fprintf(stderr, "[bytekv] aof: quarantined corrupt tail to %s\n", quarantine);
+}
+
 int aof_load(const char *path) {
   struct stat st;
   if (stat(path, &st) == -1 || st.st_size == 0)
@@ -171,22 +235,34 @@ int aof_load(const char *path) {
     return -1;
   }
 
+  off_t total_size = st.st_size;
   uint8_t record[AOF_RECORD_MAX];
   off_t valid_end = 0;
   size_t records = 0;
+  const char *break_reason = NULL;
 
   while (true) {
     ssize_t nread = read_exact(fd, (char *)record, AOF_HEADER_SIZE);
-    if (nread <= 0)
+    if (nread < 0) {
+      break_reason = "header read error";
       break;
+    }
+    if (nread == 0)
+      break; /* clean EOF on a record boundary */
+    if (nread < AOF_HEADER_SIZE) {
+      break_reason = "truncated header";
+      break;
+    }
 
     uint32_t body_len_net;
     memcpy(&body_len_net, record + AOF_CRC_SIZE, sizeof(body_len_net));
     uint32_t body_len = ntohl(body_len_net);
 
     nread = read_exact(fd, (char *)record + AOF_HEADER_SIZE, body_len);
-    if (nread <= 0)
+    if (nread < 0 || (uint32_t)nread < body_len) {
+      break_reason = "truncated body";
       break;
+    }
 
     uint64_t crc_stored_net;
     memcpy(&crc_stored_net, record, AOF_CRC_SIZE);
@@ -196,20 +272,33 @@ int aof_load(const char *path) {
               body_len + AOF_BODYLEN_SIZE);
 
     if (crc_stored != crc_computed) {
-      fprintf(stderr, "[bytekv] aof: CRC mismatch, stopping replay\n");
+      break_reason = "CRC mismatch";
       break;
     }
     int replay_status = aof_replay_record(record + AOF_HEADER_SIZE, body_len);
     if (replay_status == EXIT_FAILURE) {
-      fprintf(stderr, "[bytekv] aof: replay failed\n");
+      break_reason = "replay failed";
       break;
     }
     records += 1;
     valid_end += AOF_HEADER_SIZE + body_len;
   }
 
-  printf("[bytekv] aof: replayed %zu records\n", records);
-  ftruncate(fd, valid_end);
+  off_t bytes_lost = total_size - valid_end;
+  printf("[bytekv] aof: replayed %zu records (%lld bytes)\n", records,
+         (long long)valid_end);
+
+  if (bytes_lost > 0) {
+    fprintf(stderr,
+            "[bytekv] aof: stopping replay at offset %lld (%s); "
+            "%lld trailing bytes will be truncated\n",
+            (long long)valid_end, break_reason ? break_reason : "unknown",
+            (long long)bytes_lost);
+    aof_quarantine_tail(path, fd, valid_end, bytes_lost);
+  }
+
+  if (ftruncate(fd, valid_end) == -1)
+    perror("aof load: ftruncate");
   close(fd);
   return 0;
 }
@@ -225,7 +314,7 @@ void aof_cron(void) {
     return;
   if (!server.aof_buf_dirty)
     return;
-  if ((server.cronloops + 1) % server.config.aof_check_hz != 0)
+  if (server.cronloops % server.config.aof_check_hz != 0)
     return;
 
   if (durable_flush(server.aof_fd) == -1) {
@@ -269,18 +358,31 @@ static void aof_rewrite_child(void) {
 }
 
 int aof_rewrite_start(void) {
+  /* Allocate the diff buffer BEFORE fork so the parent never lands in a
+     state where the child is running but rewrite_buf is NULL. A NULL
+     rewrite_buf with pid > 0 would crash aof_append on its first memcpy. */
+  char *buf = malloc(server.aof_rewrite_cap);
+  if (!buf) {
+    fprintf(stderr, "[bytekv] aof rewrite: malloc(%zu) failed, skipping\n",
+            server.aof_rewrite_cap);
+    return -1;
+  }
+
   pid_t pid = fork();
   if (pid < 0) {
     perror("aof rewrite: fork");
+    free(buf);
     return -1;
   }
   if (pid == 0) {
+    /* child never returns from this call */
     aof_rewrite_child();
+    _exit(1); /* defensive: unreachable */
   }
   /* parent */
   server.aof_rewrite_pid = pid;
   server.aof_rewrite_len = 0;
-  server.aof_rewrite_buf = malloc(server.aof_rewrite_cap);
+  server.aof_rewrite_buf = buf;
   return 0;
 }
 
@@ -289,6 +391,7 @@ static void aof_rewrite_cleanup(void) {
   server.aof_rewrite_buf = NULL;
   server.aof_rewrite_len = 0;
   server.aof_rewrite_pid = -1;
+  server.aof_rewrite_aborted = false;
 }
 
 static void aof_rewrite_finalize(void) {
@@ -312,13 +415,25 @@ static void aof_rewrite_finalize(void) {
   }
   close(temp_fd);
 
-  if (rename("temp.aof", server.config.aof_filename) == -1) {
-    perror("aof rewrite finalize: rename");
+  /* Open the new fd BEFORE rename. The fd binds to the inode, so the rename
+     (which only manipulates the directory entry) leaves the fd pointing to
+     the same file. This guarantees we always hold a valid writable fd —
+     no window where new aof_append calls would fail with EBADF. */
+  int new_aof_fd = open_aof("temp.aof");
+  if (new_aof_fd == -1) {
+    perror("aof rewrite finalize: reopen");
     goto fail;
   }
 
-  close(server.aof_fd);
-  server.aof_fd = open_aof(server.config.aof_filename);
+  if (rename("temp.aof", server.config.aof_filename) == -1) {
+    perror("aof rewrite finalize: rename");
+    close(new_aof_fd);
+    goto fail;
+  }
+
+  int old_aof_fd = server.aof_fd;
+  server.aof_fd = new_aof_fd;
+  close(old_aof_fd);
 
   struct stat st;
   if (stat(server.config.aof_filename, &st) == 0)
@@ -369,7 +484,17 @@ void aof_rewrite_cron(void) {
     return;
   }
 
-  /* child finished */
+  /* child finished. If we aborted mid-flight (diff overflow), discard the
+     temp file regardless of how the child terminated — the diff is gone so
+     finalize would produce a file missing every write since the abort. */
+  if (server.aof_rewrite_aborted) {
+    fprintf(stderr,
+            "[bytekv] aof rewrite: discarding temp.aof after abort\n");
+    unlink("temp.aof");
+    aof_rewrite_cleanup();
+    return;
+  }
+
   if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
     aof_rewrite_finalize();
   } else {

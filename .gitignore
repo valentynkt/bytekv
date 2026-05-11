@@ -3,3 +3,4 @@ bytekv
 bytekv_*
 *.dSYM/
 /docs
+/bytekv.aof

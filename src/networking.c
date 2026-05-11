@@ -196,7 +196,10 @@ static void check_client_timeouts(event_loop_t *el) {
 }
 
 void client_timeouts_cron(event_loop_t *el) {
-  if (server.cronloops % server.config.client_timeout_check_hz != 0)
+  static int64_t last_check_ms = 0;
+  int interval_ms =
+      server.config.client_timeout_check_hz * 1000 / server.config.hz;
+  if (!run_every_ms(&last_check_ms, server.now_ms, interval_ms))
     return;
   check_client_timeouts(el);
 }

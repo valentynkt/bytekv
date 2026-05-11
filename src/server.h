@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <sys/types.h>
 
+#include "aof.h"
 #include "config.h"
 #include "db.h"
 #include "event_loop.h"
@@ -40,12 +41,13 @@ typedef struct {
   int64_t now_realtime_ms; /* wall clock, for persisted timestamps */
   int aof_fd;
   bool aof_buf_dirty;
-  int aof_rewrite_pid;     /* -1= idle, >0 = child pid */
-  char *aof_rewrite_buf;   /* accumulated mutations */
+  aof_rewrite_state_t aof_rewrite_state;
+  pid_t aof_rewrite_pid;     /* valid when state != AOF_RW_IDLE */
+  char *aof_rewrite_buf;     /* accumulated mutations during ACTIVE */
   size_t aof_rewrite_len;
   size_t aof_rewrite_cap;
-  bool aof_rewrite_aborted; /* diff overflowed cap; cron must reap+discard */
   off_t aof_rewrite_last_size;
+  char *aof_temp_filename;   /* "<aof_filename>.tmp.<pid>" — child write target */
 } server_t;
 
 extern server_t server;

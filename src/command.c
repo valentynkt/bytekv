@@ -194,7 +194,7 @@ static void cmd_info(command_ctx_t *ctx) {
 }
 
 static void cmd_bgrewriteaof(command_ctx_t *ctx) {
-  if (server.aof_rewrite_pid > 0) {
+  if (server.aof_rewrite_state != AOF_RW_IDLE) {
     resp_add(&ctx->resp, "-ERR rewrite already in progress\n");
     return;
   }

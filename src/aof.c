@@ -61,6 +61,68 @@ static ssize_t aof_serialize(uint8_t *buf, size_t buf_sz, aof_opcode_t op,
 
 /* Write path                                                          */
 
+/* Live append: append to the on-disk AOF (kernel page cache). This is
+   always done while AOF is enabled, regardless of policy. */
+static int aof_emit_live(const uint8_t *buf, size_t n) {
+  return write_all(server.aof_fd, (const char *)buf, n) == -1 ? -1 : 0;
+}
+
+/* Tear down an in-flight rewrite (diff overflow / realloc failure).
+   Signals the child, frees the diff buffer, moves state to ABORTING so the
+   cron path will discard temp.aof on reap. The live AOF is untouched. */
+static void aof_abort_rewrite(const char *reason) {
+  fprintf(stderr,
+          "[bytekv] aof rewrite: aborting (%s); live AOF unaffected\n",
+          reason);
+  kill(server.aof_rewrite_pid, SIGTERM);
+  free(server.aof_rewrite_buf);
+  server.aof_rewrite_buf = NULL;
+  server.aof_rewrite_len = 0;
+  server.aof_rewrite_state = AOF_RW_ABORTING;
+}
+
+/* Diff append: stash a copy of the record into the in-memory diff buffer
+   so finalize() can append it after the child's snapshot. Bounded by
+   aof_rewrite_buf_max_size — on overflow we abort the rewrite. */
+static void aof_emit_diff(const uint8_t *buf, size_t n) {
+  size_t needed = server.aof_rewrite_len + n;
+  size_t max_cap = (size_t)server.config.aof_rewrite_buf_max_size;
+
+  if (needed > server.aof_rewrite_cap) {
+    if (needed > max_cap) {
+      char msg[64];
+      snprintf(msg, sizeof(msg), "diff buf would exceed %zu bytes", max_cap);
+      aof_abort_rewrite(msg);
+      return;
+    }
+    size_t new_cap = server.aof_rewrite_cap * 2;
+    if (new_cap < needed)
+      new_cap = needed;
+    if (new_cap > max_cap)
+      new_cap = max_cap;
+    char *new_buf = realloc(server.aof_rewrite_buf, new_cap);
+    if (!new_buf) {
+      aof_abort_rewrite("realloc failed");
+      return;
+    }
+    server.aof_rewrite_buf = new_buf;
+    server.aof_rewrite_cap = new_cap;
+  }
+  memcpy(server.aof_rewrite_buf + server.aof_rewrite_len, buf, n);
+  server.aof_rewrite_len += n;
+}
+
+/* ALWAYS policy: fsync the live AOF after each record. Other policies defer
+   fsync to aof_cron (PERTICK) or to the OS (NO). */
+static int aof_maybe_fsync_always(void) {
+  if (server.config.aof_policy != AOF_POLICY_ALWAYS)
+    return 0;
+  if (durable_flush(server.aof_fd) == -1)
+    return -1;
+  server.aof_buf_dirty = false;
+  return 0;
+}
+
 int aof_append(aof_opcode_t op, const char *key, size_t key_len,
                const char *value, size_t val_len, int64_t expire_at) {
   if (!server.config.aof_enabled)
@@ -71,57 +133,15 @@ int aof_append(aof_opcode_t op, const char *key, size_t key_len,
                                       val_len, expire_at);
   if (record_size == -1)
     return EXIT_FAILURE;
-  ssize_t nwritten = write_all(server.aof_fd, (const char *)buf, record_size);
-  if (nwritten == -1)
+
+  if (aof_emit_live(buf, record_size) == -1)
     return EXIT_FAILURE;
 
-  if (server.aof_rewrite_pid > 0 && server.aof_rewrite_buf) {
-    size_t needed = server.aof_rewrite_len + record_size;
-    size_t max_cap = (size_t)server.config.aof_rewrite_buf_max_size;
-
-    if (needed > server.aof_rewrite_cap) {
-      if (needed > max_cap) {
-        /* Diff buffer would exceed the hard cap. Abort the rewrite to keep
-           serving — the live AOF on disk is still authoritative; the next
-           rewrite attempt will try again from a fresh snapshot. */
-        fprintf(stderr,
-                "[bytekv] aof rewrite: diff buf would exceed %zu bytes, "
-                "aborting rewrite (live AOF unaffected)\n",
-                max_cap);
-        kill(server.aof_rewrite_pid, SIGTERM);
-        free(server.aof_rewrite_buf);
-        server.aof_rewrite_buf = NULL;
-        server.aof_rewrite_len = 0;
-        server.aof_rewrite_aborted = true;
-        /* fall through to fsync path below */
-      } else {
-        size_t new_cap = server.aof_rewrite_cap * 2;
-        if (new_cap < needed)
-          new_cap = needed;
-        if (new_cap > max_cap)
-          new_cap = max_cap;
-        char *new_buf = realloc(server.aof_rewrite_buf, new_cap);
-        if (!new_buf)
-          return EXIT_FAILURE;
-        server.aof_rewrite_buf = new_buf;
-        server.aof_rewrite_cap = new_cap;
-        memcpy(server.aof_rewrite_buf + server.aof_rewrite_len, buf,
-               record_size);
-        server.aof_rewrite_len += record_size;
-      }
-    } else {
-      memcpy(server.aof_rewrite_buf + server.aof_rewrite_len, buf, record_size);
-      server.aof_rewrite_len += record_size;
-    }
-  }
+  if (server.aof_rewrite_state == AOF_RW_ACTIVE)
+    aof_emit_diff(buf, record_size);
 
   server.aof_buf_dirty = true;
-  if (server.config.aof_policy == AOF_POLICY_ALWAYS) {
-    if (durable_flush(server.aof_fd) == -1)
-      return EXIT_FAILURE;
-    server.aof_buf_dirty = false;
-  }
-  return EXIT_SUCCESS;
+  return aof_maybe_fsync_always() == -1 ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
 /* Recovery (read path)                                                */
@@ -314,7 +334,9 @@ void aof_cron(void) {
     return;
   if (!server.aof_buf_dirty)
     return;
-  if (server.cronloops % server.config.aof_check_hz != 0)
+  static int64_t last_fsync_ms = 0;
+  int interval_ms = server.config.aof_check_hz * 1000 / server.config.hz;
+  if (!run_every_ms(&last_fsync_ms, server.now_ms, interval_ms))
     return;
 
   if (durable_flush(server.aof_fd) == -1) {
@@ -325,7 +347,7 @@ void aof_cron(void) {
 }
 
 static void aof_rewrite_child(void) {
-  int fd = open("temp.aof", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  int fd = open(server.aof_temp_filename, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
   if (fd == -1)
     _exit(1);
 
@@ -381,6 +403,7 @@ int aof_rewrite_start(void) {
   }
   /* parent */
   server.aof_rewrite_pid = pid;
+  server.aof_rewrite_state = AOF_RW_ACTIVE;
   server.aof_rewrite_len = 0;
   server.aof_rewrite_buf = buf;
   return 0;
@@ -391,11 +414,11 @@ static void aof_rewrite_cleanup(void) {
   server.aof_rewrite_buf = NULL;
   server.aof_rewrite_len = 0;
   server.aof_rewrite_pid = -1;
-  server.aof_rewrite_aborted = false;
+  server.aof_rewrite_state = AOF_RW_IDLE;
 }
 
 static void aof_rewrite_finalize(void) {
-  int temp_fd = open("temp.aof", O_WRONLY | O_APPEND | O_CLOEXEC);
+  int temp_fd = open(server.aof_temp_filename, O_WRONLY | O_APPEND | O_CLOEXEC);
   if (temp_fd == -1) {
     perror("aof rewrite finalize: open");
     goto fail;
@@ -419,13 +442,13 @@ static void aof_rewrite_finalize(void) {
      (which only manipulates the directory entry) leaves the fd pointing to
      the same file. This guarantees we always hold a valid writable fd —
      no window where new aof_append calls would fail with EBADF. */
-  int new_aof_fd = open_aof("temp.aof");
+  int new_aof_fd = open_aof(server.aof_temp_filename);
   if (new_aof_fd == -1) {
     perror("aof rewrite finalize: reopen");
     goto fail;
   }
 
-  if (rename("temp.aof", server.config.aof_filename) == -1) {
+  if (rename(server.aof_temp_filename, server.config.aof_filename) == -1) {
     perror("aof rewrite finalize: rename");
     close(new_aof_fd);
     goto fail;
@@ -445,7 +468,7 @@ static void aof_rewrite_finalize(void) {
 
 fail:
   fprintf(stderr, "[bytekv] aof rewrite failed, keeping old AOF\n");
-  unlink("temp.aof");
+  unlink(server.aof_temp_filename);
   aof_rewrite_cleanup();
 }
 
@@ -453,12 +476,13 @@ void aof_rewrite_cron(void) {
   if (!server.config.aof_enabled)
     return;
 
-  /* check once per second, not every tick */
-  if (server.cronloops % server.config.hz != 0)
+  /* check once per second, regardless of event-loop tick rate */
+  static int64_t last_check_ms = 0;
+  if (!run_every_ms(&last_check_ms, server.now_ms, 1000))
     return;
 
   /* no child running, maybe start one */
-  if (server.aof_rewrite_pid == -1) {
+  if (server.aof_rewrite_state == AOF_RW_IDLE) {
     struct stat st;
     if (stat(server.config.aof_filename, &st) != 0)
       return;
@@ -487,10 +511,10 @@ void aof_rewrite_cron(void) {
   /* child finished. If we aborted mid-flight (diff overflow), discard the
      temp file regardless of how the child terminated — the diff is gone so
      finalize would produce a file missing every write since the abort. */
-  if (server.aof_rewrite_aborted) {
+  if (server.aof_rewrite_state == AOF_RW_ABORTING) {
     fprintf(stderr,
             "[bytekv] aof rewrite: discarding temp.aof after abort\n");
-    unlink("temp.aof");
+    unlink(server.aof_temp_filename);
     aof_rewrite_cleanup();
     return;
   }
@@ -499,7 +523,7 @@ void aof_rewrite_cron(void) {
     aof_rewrite_finalize();
   } else {
     fprintf(stderr, "[bytekv] aof rewrite: child failed (status %d)\n", status);
-    unlink("temp.aof");
+    unlink(server.aof_temp_filename);
     aof_rewrite_cleanup();
   }
 }

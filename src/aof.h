@@ -15,6 +15,18 @@ typedef enum {
   AOF_OP_PERSIST = 5,
 } aof_opcode_t;
 
+/* AOF rewrite lifecycle. The child pid is tracked separately as a kernel
+   handle; this enum records what we want to do when the child terminates.
+     IDLE     - no child; cron may start one if thresholds are met
+     ACTIVE   - child running, diff buffer accepting writes, finalize on success
+     ABORTING - we signaled the child after a diff-buffer overflow; on reap
+                the temp file is discarded and we go back to IDLE */
+typedef enum {
+  AOF_RW_IDLE = 0,
+  AOF_RW_ACTIVE,
+  AOF_RW_ABORTING,
+} aof_rewrite_state_t;
+
 /* --- AOF record layout ---
    All multi-byte integers are big-endian (network byte order).
 

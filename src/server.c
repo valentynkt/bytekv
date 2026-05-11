@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -117,9 +118,23 @@ static int init_server(void) {
   server.now_realtime_ms = realtime_ms();
   server.db = db_create(server.now_ms);
   server.aof_buf_dirty = false;
+  server.aof_rewrite_state = AOF_RW_IDLE;
   server.aof_rewrite_pid = -1;
   server.aof_rewrite_cap = AOF_RECORD_MAX * 64;
-  server.aof_rewrite_aborted = false;
+
+  /* per-instance temp path: avoids collision between two bytekv processes
+     sharing a working directory, and survives fork() since the child inherits
+     the pointer. */
+  if (server.config.aof_filename) {
+    char tmp[512];
+    snprintf(tmp, sizeof(tmp), "%s.tmp.%d", server.config.aof_filename,
+             (int)getpid());
+    server.aof_temp_filename = strdup(tmp);
+    if (!server.aof_temp_filename) {
+      perror("aof temp filename strdup");
+      return EXIT_FAILURE;
+    }
+  }
 
   setup_signal_handlers();
 

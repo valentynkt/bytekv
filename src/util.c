@@ -60,6 +60,13 @@ int64_t realtime_ms(void) {
   clock_gettime(CLOCK_REALTIME, &tp);
   return ((int64_t)tp.tv_sec * 1000) + (tp.tv_nsec / 1000000);
 }
+
+bool run_every_ms(int64_t *last_ms, int64_t now_ms, int interval_ms) {
+  if (now_ms - *last_ms < interval_ms)
+    return false;
+  *last_ms = now_ms;
+  return true;
+}
 int durable_flush(int fd) {
 #if defined(__APPLE__)
   if (fcntl(fd, F_FULLFSYNC) == 0)

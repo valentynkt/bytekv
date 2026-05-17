@@ -22,6 +22,111 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+/* Forward declarations for helpers used out of definition order. */
+static void aof_rewrite_record_failure(void);
+
+/* Durability                                                          */
+
+/* Flush the kernel page cache for `fd` to the storage device. The strength
+   of "to the device" depends on `aof_fsync_mode`:
+   - DATA: skip metadata (size/mtime/inode) flush; only the file's data
+           pages. Linux only; falls back to fsync elsewhere.
+   - META: full fsync (data + inode metadata).
+   - FULL: F_FULLFSYNC on macOS, which also flushes the SSD's internal DRAM
+           cache to NAND. Strongest, ~10x slower on Apple silicon. */
+static int durable_flush(int fd) {
+  int rc;
+  switch (server.config.aof_fsync_mode) {
+  case AOF_FSYNC_DATA:
+#if defined(__linux__)
+    rc = fdatasync(fd);
+#else
+    rc = fsync(fd);
+#endif
+    break;
+  case AOF_FSYNC_FULL:
+#if defined(__APPLE__)
+    if (fcntl(fd, F_FULLFSYNC) == 0) {
+      server.aof_total_fsyncs++;
+      return 0;
+    }
+    /* fall through to fsync if F_FULLFSYNC unsupported (e.g. some FS) */
+#endif
+    rc = fsync(fd);
+    break;
+  case AOF_FSYNC_META:
+  default:
+    rc = fsync(fd);
+    break;
+  }
+  if (rc == 0)
+    server.aof_total_fsyncs++;
+  return rc;
+}
+
+/* File-level header                                                   */
+
+int aof_write_file_header(int fd) {
+  uint8_t hdr[AOF_FILE_HEADER_SIZE];
+  memcpy(hdr, AOF_FILE_MAGIC, AOF_FILE_MAGIC_LEN);
+
+  uint32_t version_net = htonl(AOF_FILE_VERSION);
+  memcpy(hdr + 8, &version_net, 4);
+
+  uint32_t flags_net = 0;
+  memcpy(hdr + 12, &flags_net, 4);
+
+  uint64_t created_net = htobe64((uint64_t)realtime_ms());
+  memcpy(hdr + 16, &created_net, 8);
+
+  uint64_t crc = crc64(0, hdr, 24);
+  uint64_t crc_net = htobe64(crc);
+  memcpy(hdr + 24, &crc_net, 8);
+
+  if (write_all(fd, (const char *)hdr, AOF_FILE_HEADER_SIZE) == -1)
+    return -1;
+  return 0;
+}
+
+/* Read+validate the 32-byte file header from `fd`'s current offset.
+   On success the fd is positioned at the first record (offset = HEADER_SIZE).
+   Returns 0 on success, -1 on bad magic / unknown version / corrupt CRC. */
+static int aof_read_file_header(int fd) {
+  uint8_t hdr[AOF_FILE_HEADER_SIZE];
+  ssize_t n = read_exact(fd, (char *)hdr, AOF_FILE_HEADER_SIZE);
+  if (n != AOF_FILE_HEADER_SIZE) {
+    fprintf(stderr,
+            "[bytekv] aof: header read short (%zd of %d) — file too small\n",
+            n, AOF_FILE_HEADER_SIZE);
+    return -1;
+  }
+  if (memcmp(hdr, AOF_FILE_MAGIC, AOF_FILE_MAGIC_LEN) != 0) {
+    fprintf(stderr,
+            "[bytekv] aof: bad magic. This file is not a versioned bytekv "
+            "AOF (legacy or corrupt). Delete it and restart to begin fresh.\n");
+    return -1;
+  }
+  uint32_t version_net;
+  memcpy(&version_net, hdr + 8, 4);
+  uint32_t version = ntohl(version_net);
+  if (version != AOF_FILE_VERSION) {
+    fprintf(stderr,
+            "[bytekv] aof: unsupported file version %u (this build expects "
+            "%u)\n",
+            version, AOF_FILE_VERSION);
+    return -1;
+  }
+  uint64_t crc_stored_net;
+  memcpy(&crc_stored_net, hdr + 24, 8);
+  uint64_t crc_stored = be64toh(crc_stored_net);
+  uint64_t crc_computed = crc64(0, hdr, 24);
+  if (crc_stored != crc_computed) {
+    fprintf(stderr, "[bytekv] aof: header CRC mismatch\n");
+    return -1;
+  }
+  return 0;
+}
+
 /* Serialization                                                       */
 static ssize_t aof_serialize(uint8_t *buf, size_t buf_sz, aof_opcode_t op,
                              const char *key, size_t key_len, const char *value,
@@ -64,7 +169,10 @@ static ssize_t aof_serialize(uint8_t *buf, size_t buf_sz, aof_opcode_t op,
 /* Live append: append to the on-disk AOF (kernel page cache). This is
    always done while AOF is enabled, regardless of policy. */
 static int aof_emit_live(const uint8_t *buf, size_t n) {
-  return write_all(server.aof_fd, (const char *)buf, n) == -1 ? -1 : 0;
+  if (write_all(server.aof_fd, (const char *)buf, n) == -1)
+    return -1;
+  server.aof_total_writes++;
+  return 0;
 }
 
 /* Tear down an in-flight rewrite (diff overflow / realloc failure).
@@ -247,7 +355,14 @@ static void aof_quarantine_tail(const char *path, int src_fd, off_t from,
 int aof_load(const char *path) {
   struct stat st;
   if (stat(path, &st) == -1 || st.st_size == 0)
-    return 0;
+    return 0; /* fresh start; init_server writes header after open_aof */
+
+  if (st.st_size < AOF_FILE_HEADER_SIZE) {
+    fprintf(stderr,
+            "[bytekv] aof: file too small for v1 header (%lld bytes < %d)\n",
+            (long long)st.st_size, AOF_FILE_HEADER_SIZE);
+    return -1;
+  }
 
   int fd = open(path, O_RDWR);
   if (fd == -1) {
@@ -255,9 +370,15 @@ int aof_load(const char *path) {
     return -1;
   }
 
+  if (aof_read_file_header(fd) == -1) {
+    close(fd);
+    return -1;
+  }
+
   off_t total_size = st.st_size;
   uint8_t record[AOF_RECORD_MAX];
-  off_t valid_end = 0;
+  /* header bytes are always preserved; record replay starts after them */
+  off_t valid_end = AOF_FILE_HEADER_SIZE;
   size_t records = 0;
   const char *break_reason = NULL;
 
@@ -351,6 +472,11 @@ static void aof_rewrite_child(void) {
   if (fd == -1)
     _exit(1);
 
+  /* file-level header first, so the rewritten AOF is self-describing
+     even before any record is written */
+  if (aof_write_file_header(fd) == -1)
+    _exit(1);
+
   uint8_t buf[AOF_RECORD_MAX];
   ht_iter_t *iter = ht_iter_create(server.db->keyspace);
   ht_entry_t *entry;
@@ -387,6 +513,7 @@ int aof_rewrite_start(void) {
   if (!buf) {
     fprintf(stderr, "[bytekv] aof rewrite: malloc(%zu) failed, skipping\n",
             server.aof_rewrite_cap);
+    aof_rewrite_record_failure();
     return -1;
   }
 
@@ -394,6 +521,7 @@ int aof_rewrite_start(void) {
   if (pid < 0) {
     perror("aof rewrite: fork");
     free(buf);
+    aof_rewrite_record_failure();
     return -1;
   }
   if (pid == 0) {
@@ -406,6 +534,7 @@ int aof_rewrite_start(void) {
   server.aof_rewrite_state = AOF_RW_ACTIVE;
   server.aof_rewrite_len = 0;
   server.aof_rewrite_buf = buf;
+  server.aof_last_rewrite_start_ms = server.now_ms;
   return 0;
 }
 
@@ -415,6 +544,28 @@ static void aof_rewrite_cleanup(void) {
   server.aof_rewrite_len = 0;
   server.aof_rewrite_pid = -1;
   server.aof_rewrite_state = AOF_RW_IDLE;
+}
+
+/* Record a rewrite failure and schedule the next attempt with exponential
+   backoff. Doubles the delay per consecutive failure, clamped at the
+   configured ceiling. Reset on success in aof_rewrite_finalize. */
+static void aof_rewrite_record_failure(void) {
+  server.aof_rewrites_failed++;
+  server.aof_rewrite_failed_streak++;
+
+  int64_t delay = server.config.aof_rewrite_backoff_base_ms;
+  int64_t max = server.config.aof_rewrite_backoff_max_ms;
+  for (int i = 1; i < server.aof_rewrite_failed_streak; i++) {
+    delay *= 2;
+    if (delay >= max) {
+      delay = max;
+      break;
+    }
+  }
+  server.aof_rewrite_next_attempt_ms = server.now_ms + delay;
+  fprintf(stderr,
+          "[bytekv] aof rewrite: next attempt in %lldms (failed streak=%d)\n",
+          (long long)delay, server.aof_rewrite_failed_streak);
 }
 
 static void aof_rewrite_finalize(void) {
@@ -462,13 +613,21 @@ static void aof_rewrite_finalize(void) {
   if (stat(server.config.aof_filename, &st) == 0)
     server.aof_rewrite_last_size = st.st_size;
 
+  server.aof_rewrites_completed++;
+  server.aof_rewrite_failed_streak = 0;
+  server.aof_rewrite_next_attempt_ms = 0;
+  server.aof_last_rewrite_duration_ms =
+      server.now_ms - server.aof_last_rewrite_start_ms;
   aof_rewrite_cleanup();
-  printf("[bytekv] aof rewrite complete\n");
+  printf("[bytekv] aof rewrite complete (%lldms, %lld bytes)\n",
+         (long long)server.aof_last_rewrite_duration_ms,
+         (long long)server.aof_rewrite_last_size);
   return;
 
 fail:
   fprintf(stderr, "[bytekv] aof rewrite failed, keeping old AOF\n");
   unlink(server.aof_temp_filename);
+  aof_rewrite_record_failure();
   aof_rewrite_cleanup();
 }
 
@@ -483,6 +642,11 @@ void aof_rewrite_cron(void) {
 
   /* no child running, maybe start one */
   if (server.aof_rewrite_state == AOF_RW_IDLE) {
+    /* respect exponential backoff after prior failures */
+    if (server.aof_rewrite_next_attempt_ms > 0 &&
+        server.now_ms < server.aof_rewrite_next_attempt_ms)
+      return;
+
     struct stat st;
     if (stat(server.config.aof_filename, &st) != 0)
       return;
@@ -504,6 +668,7 @@ void aof_rewrite_cron(void) {
     return; /* still working */
   if (result == -1) {
     perror("aof rewrite: waitpid");
+    aof_rewrite_record_failure();
     aof_rewrite_cleanup();
     return;
   }
@@ -515,6 +680,7 @@ void aof_rewrite_cron(void) {
     fprintf(stderr,
             "[bytekv] aof rewrite: discarding temp.aof after abort\n");
     unlink(server.aof_temp_filename);
+    aof_rewrite_record_failure();
     aof_rewrite_cleanup();
     return;
   }
@@ -524,6 +690,7 @@ void aof_rewrite_cron(void) {
   } else {
     fprintf(stderr, "[bytekv] aof rewrite: child failed (status %d)\n", status);
     unlink(server.aof_temp_filename);
+    aof_rewrite_record_failure();
     aof_rewrite_cleanup();
   }
 }

@@ -186,11 +186,25 @@ static void cmd_keys(command_ctx_t *ctx) {
 
 static void cmd_info(command_ctx_t *ctx) {
   int64_t uptime_s = (server.now_ms - server.db->start_ms) / 1000;
+  const char *rewrite_state =
+      server.aof_rewrite_state == AOF_RW_IDLE       ? "idle"
+      : server.aof_rewrite_state == AOF_RW_ACTIVE   ? "active"
+      : server.aof_rewrite_state == AOF_RW_ABORTING ? "aborting"
+                                                    : "unknown";
   resp_addf(&ctx->resp,
             "Uptime: %" PRId64 " seconds\n"
             "DB Size: %zu\n"
-            "DB Keys Used: %zu\n",
-            uptime_s, server.db->keyspace->size, server.db->keyspace->used);
+            "DB Keys Used: %zu\n"
+            "AOF Writes: %" PRId64 "\n"
+            "AOF Fsyncs: %" PRId64 "\n"
+            "AOF Rewrite State: %s\n"
+            "AOF Rewrites Completed: %" PRId64 "\n"
+            "AOF Rewrites Failed: %" PRId64 "\n"
+            "AOF Last Rewrite Duration: %" PRId64 " ms\n",
+            uptime_s, server.db->keyspace->size, server.db->keyspace->used,
+            server.aof_total_writes, server.aof_total_fsyncs, rewrite_state,
+            server.aof_rewrites_completed, server.aof_rewrites_failed,
+            server.aof_last_rewrite_duration_ms);
 }
 
 static void cmd_bgrewriteaof(command_ctx_t *ctx) {

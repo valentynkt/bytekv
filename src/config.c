@@ -9,6 +9,9 @@
 /* Order must match aof_policy_t values in config.h */
 static const char *aof_policy_values[] = {"no", "pertick", "always", NULL};
 
+/* Order must match aof_fsync_mode_t values in config.h */
+static const char *aof_fsync_mode_values[] = {"data", "meta", "full", NULL};
+
 static config_entry_t config_table[] = {
     {"port", CONFIG_TYPE_INT, OFFSET(port), 1, 65535, NULL},
     {"tcp-backlog", CONFIG_TYPE_INT, OFFSET(tcp_backlog), 1, 65535, NULL},
@@ -32,8 +35,14 @@ static config_entry_t config_table[] = {
      10, 1000, NULL},
     {"aof-rewrite-buf-max-size", CONFIG_TYPE_INT,
      OFFSET(aof_rewrite_buf_max_size), 1024 * 1024, 2000000000, NULL},
+    {"aof-rewrite-backoff-base-ms", CONFIG_TYPE_INT,
+     OFFSET(aof_rewrite_backoff_base_ms), 100, 600000, NULL},
+    {"aof-rewrite-backoff-max-ms", CONFIG_TYPE_INT,
+     OFFSET(aof_rewrite_backoff_max_ms), 1000, 3600000, NULL},
     {"appendfsync", CONFIG_TYPE_ENUM, OFFSET(aof_policy), 0, 0,
      aof_policy_values},
+    {"aof-fsync-mode", CONFIG_TYPE_ENUM, OFFSET(aof_fsync_mode), 0, 0,
+     aof_fsync_mode_values},
     {NULL, 0, 0, 0, 0, NULL},
 };
 
@@ -51,11 +60,16 @@ void init_server_config(void) {
   server.config.aof_check_hz = CONFIG_DEFAULT_AOF_CHECK_HZ;
   server.config.aof_enabled = CONFIG_DEFAULT_AOF_ENABLED;
   server.config.aof_policy = CONFIG_DEFAULT_AOF_POLICY;
+  server.config.aof_fsync_mode = CONFIG_DEFAULT_AOF_FSYNC_MODE;
   server.config.aof_filename = strdup(CONFIG_DEFAULT_AOF_FILENAME);
   server.config.aof_rewrite_min_size = CONFIG_DEFAULT_AOF_REWRITE_MIN_SIZE;
   server.config.aof_rewrite_growth = CONFIG_DEFAULT_AOF_REWRITE_GROWTH;
   server.config.aof_rewrite_buf_max_size =
       CONFIG_DEFAULT_AOF_REWRITE_BUF_MAX_SIZE;
+  server.config.aof_rewrite_backoff_base_ms =
+      CONFIG_DEFAULT_AOF_REWRITE_BACKOFF_BASE_MS;
+  server.config.aof_rewrite_backoff_max_ms =
+      CONFIG_DEFAULT_AOF_REWRITE_BACKOFF_MAX_MS;
 }
 
 static config_entry_t *find_config(const char *name) {

@@ -46,10 +46,24 @@ typedef enum {
 #define AOF_BODY_FIXED 15 /* 1 (op) + 2 (klen) + 4 (vlen) + 8 (expire) */
 #define AOF_RECORD_MAX MSG_MAX
 
+/* --- AOF FILE-LEVEL header (offset 0, written once per file) ---
+   ┌────────────┬─────────┬─────────┬───────────────┬──────────────┐
+   │ 8B magic   │ 4B ver  │ 4B flag │ 8B created_ms │ 8B header CRC│
+   └────────────┴─────────┴─────────┴───────────────┴──────────────┘
+   header CRC64 covers bytes 0..23. All multi-byte fields big-endian. */
+#define AOF_FILE_MAGIC "BYTEKVAF"
+#define AOF_FILE_MAGIC_LEN 8
+#define AOF_FILE_VERSION 1
+#define AOF_FILE_HEADER_SIZE 32
+
 /* Periodic fsync for pertick policy. */
 void aof_cron(void);
 void aof_rewrite_cron(void);
 int aof_rewrite_start(void);
+
+/* Write the 32-byte file-level header (magic+version+flags+ts+crc).
+   Called once on first creation of an AOF file. */
+int aof_write_file_header(int fd);
 
 /* Append one mutation to the AOF. Returns 0 on success, -1 on error. */
 int aof_append(aof_opcode_t op, const char *key, size_t key_len,

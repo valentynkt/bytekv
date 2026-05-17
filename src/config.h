@@ -19,6 +19,19 @@ typedef enum {
   AOF_POLICY_ALWAYS = 2,
 } aof_policy_t;
 
+/* Per-call fsync flavor. Trades durability strength against throughput.
+   DATA  - fdatasync on Linux, fsync elsewhere. Skips metadata flush; fastest.
+   META  - plain fsync. Pushes data + metadata to the device.
+   FULL  - F_FULLFSYNC on macOS (flushes the device's own write cache to NAND),
+           plain fsync elsewhere. Strongest guarantee; ~10x slower on Apple
+           NVMe. Pick FULL only if you must survive a power loss between the
+           OS and the storage controller. */
+typedef enum {
+  AOF_FSYNC_DATA = 0,
+  AOF_FSYNC_META = 1,
+  AOF_FSYNC_FULL = 2,
+} aof_fsync_mode_t;
+
 /* Default values for runtime config */
 #define CONFIG_DEFAULT_PORT 9999
 #define CONFIG_DEFAULT_TCP_BACKLOG 511
@@ -31,11 +44,14 @@ typedef enum {
 #define CONFIG_DEFAULT_AOF_CHECK_HZ 10
 #define CONFIG_DEFAULT_AOF_ENABLED true
 #define CONFIG_DEFAULT_AOF_POLICY AOF_POLICY_ALWAYS
+#define CONFIG_DEFAULT_AOF_FSYNC_MODE AOF_FSYNC_FULL
 #define CONFIG_DEFAULT_AOF_FILENAME "bytekv.aof"
 #define CONFIG_DEFAULT_AOF_REWRITE_MIN_SIZE (1 * 1024 * 1024) /* 1MB */
 #define CONFIG_DEFAULT_AOF_REWRITE_GROWTH 100 /* trigger at 100% growth (2x) */
 #define CONFIG_DEFAULT_AOF_REWRITE_BUF_MAX_SIZE                                \
   (128 * 1024 * 1024) /* 128MB hard cap on in-memory diff during rewrite */
+#define CONFIG_DEFAULT_AOF_REWRITE_BACKOFF_BASE_MS 10000  /* 10s first delay */
+#define CONFIG_DEFAULT_AOF_REWRITE_BACKOFF_MAX_MS 600000  /* 10m ceiling */
 
 /* Config entry types */
 typedef enum {

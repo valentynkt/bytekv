@@ -67,18 +67,6 @@ bool run_every_ms(int64_t *last_ms, int64_t now_ms, int interval_ms) {
   *last_ms = now_ms;
   return true;
 }
-int durable_flush(int fd) {
-#if defined(__APPLE__)
-  if (fcntl(fd, F_FULLFSYNC) == 0)
-    return 0;
-  return fsync(fd);
-#elif defined(__linux__) // lowercase
-  return fdatasync(fd);
-#else
-  return fsync(fd);
-#endif
-}
-
 int open_aof(const char *path) {
   if (path == NULL) {
     fprintf(stderr, "[bytekv] open_aof: path is NULL\n");

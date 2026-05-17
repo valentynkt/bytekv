@@ -156,8 +156,19 @@ static int init_server(void) {
       return EXIT_FAILURE;
     }
     struct stat st;
-    if (stat(server.config.aof_filename, &st) == 0)
-      server.aof_rewrite_last_size = st.st_size;
+    if (stat(server.config.aof_filename, &st) == 0) {
+      /* fresh file: write the v1 header before any record */
+      if (st.st_size == 0) {
+        if (aof_write_file_header(server.aof_fd) == -1) {
+          fprintf(stderr, "[bytekv] failed to write AOF file header\n");
+          close(server.aof_fd);
+          close(server_fd);
+          return EXIT_FAILURE;
+        }
+      }
+      if (stat(server.config.aof_filename, &st) == 0)
+        server.aof_rewrite_last_size = st.st_size;
+    }
   }
 
   printf("[bytekv] listening on port %d (hz=%d)\n", server.config.port,

@@ -23,9 +23,12 @@ typedef struct {
   char *aof_filename;
   bool aof_enabled;
   aof_policy_t aof_policy;
+  aof_fsync_mode_t aof_fsync_mode;
   int aof_rewrite_min_size;
   int aof_rewrite_growth;
   int aof_rewrite_buf_max_size;
+  int aof_rewrite_backoff_base_ms;
+  int aof_rewrite_backoff_max_ms;
 } server_config_t;
 
 typedef struct {
@@ -48,6 +51,15 @@ typedef struct {
   size_t aof_rewrite_cap;
   off_t aof_rewrite_last_size;
   char *aof_temp_filename;   /* "<aof_filename>.tmp.<pid>" — child write target */
+  /* observability — incremented on the hot path, read by INFO */
+  int64_t aof_total_writes;
+  int64_t aof_total_fsyncs;
+  int64_t aof_rewrites_completed;
+  int64_t aof_rewrites_failed;
+  int64_t aof_last_rewrite_start_ms;
+  int64_t aof_last_rewrite_duration_ms;
+  int aof_rewrite_failed_streak;        /* consecutive failures, reset on win */
+  int64_t aof_rewrite_next_attempt_ms;  /* wall-clock floor before next try */
 } server_t;
 
 extern server_t server;

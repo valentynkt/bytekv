@@ -26,7 +26,6 @@ int64_t realtime_ms(void);
    `cronloops % hz` pattern, which over-fires under event-loop load. */
 bool run_every_ms(int64_t *last_ms, int64_t now_ms, int interval_ms);
 
-int durable_flush(int fd);
 int open_aof(const char *path);
 
 #endif

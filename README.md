@@ -1,23 +1,38 @@
 # bytekv
 
-A single-threaded, event-loop-driven key-value store in C, modeled on the parts
-of Redis I wanted to understand by writing them myself. Hash tables, lazy +
-active expiration, length-prefixed TCP, and a fork-based AOF rewrite — all
-from scratch, no dependencies beyond libc. ~2.7K lines.
+*A small Redis, built from scratch in C to learn how one works underneath.*
+
+A single-threaded, event-loop-driven key-value store: hash tables, lazy + active
+expiration, length-prefixed TCP, and a fork-based AOF rewrite — modeled on the
+parts of Redis worth rebuilding to understand. No dependencies beyond libc.
+~2.7K lines.
+
+**What's interesting here:**
+
+- [One tick, three phases](#one-tick-of-the-event-loop) — cron / sleep /
+  dispatch, with time snapshotted once per tick
+- [Two-table expiry](#two-hash-tables) — keys without a TTL cost nothing in the
+  expiry path
+- [Fork-based AOF rewrite](#aof-rewrite-compaction-via-fork) — copy-on-write
+  compaction while the parent keeps serving
+- [Torn-write detection](#record-layout) — CRC64 per record; a half-written tail
+  is truncated cleanly on replay
+- [Self-pipe shutdown](#design-choices-and-why) — async-signal-safe `SIGINT`,
+  no `volatile sig_atomic_t` polling
 
 ## Demo
 
 ```
 $ ./bytekv &
 $ python3 client.py
-bytekv> SET mood rebellious
+bytekv> SET user alice
 +OK
-bytekv> SETEX hype 5 "ai-will-replace-programmers"
+bytekv> SETEX session 5 token-abc123
 +OK
-bytekv> GET hype
-+ai-will-replace-programmers
+bytekv> GET session
++token-abc123
    (5 seconds later)
-bytekv> GET hype
+bytekv> GET session
 -ERR key not found
 bytekv> INFO
 +uptime:42 keys:1 expires:0 clients:1 aof_size:128 ...
